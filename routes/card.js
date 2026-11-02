@@ -2,6 +2,14 @@ const express = require('express');
 const db = require('../db');
 const auth = require('./authMiddleware');
 const router = express.Router();
+const DEFAULT_LOGO = '/uploads/default-favicon.png';
+
+function getLogoProxyUrl(card) {
+  const custom = (card.logo || card.logo_url || '').trim();
+  if (custom) return custom;
+  if (!card.url) return DEFAULT_LOGO;
+  return `/api/favicon?url=${encodeURIComponent(card.url)}`;
+}
 
 // 获取指定菜单的卡片
 router.get('/:menuId', (req, res) => {
@@ -21,10 +29,13 @@ router.get('/:menuId', (req, res) => {
   db.all(query, params, (err, rows) => {
     if (err) return res.status(500).json({error: err.message});
     rows.forEach(card => {
-      if (!card.custom_logo_path) {
-        card.display_logo = card.logo_url || (card.url.replace(/\/+$/, '') + '/favicon.ico');
+      const customLogo = (card.logo || card.logo_url || '').trim();
+      if (customLogo) {
+        card.display_logo = customLogo;
+      } else if (card.custom_logo_path) {
+        card.display_logo = '/uploads/' + card.custom_logo_path.replace(/^\/+/, '');
       } else {
-        card.display_logo = '/uploads/' + card.custom_logo_path;
+        card.display_logo = getLogoProxyUrl(card);
       }
     });
     res.json(rows);
@@ -57,4 +68,4 @@ router.delete('/:id', auth, (req, res) => {
   });
 });
 
-module.exports = router; 
+module.exports = router;

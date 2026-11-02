@@ -1,34 +1,23 @@
-export const DEFAULT_LOGO = '/default-favicon.png';
-export const GOOGLE_TIMEOUT_MS = 3000;
+export const DEFAULT_LOGO = '/uploads/default-favicon.png';
 export const LOGO_TIMEOUT_MS = 8000;
 
 const nonEmpty = value => typeof value === 'string' ? value.trim() : '';
 
 export function getCardLogoSources(card = {}) {
-  // 后台的历史字段是 logo_url；logo 与本地上传也需要兼容。
   const uploaded = nonEmpty(card.custom_logo_path);
   const custom = nonEmpty(card.logo) || nonEmpty(card.logo_url)
     || (uploaded ? `/uploads/${uploaded.replace(/^\/+/, '')}` : '');
-  const sources = custom ? [custom] : [];
+  if (custom) return [custom, DEFAULT_LOGO];
 
   try {
     const site = new URL(nonEmpty(card.url));
-    if (site.protocol === 'https:' || site.protocol === 'http:') {
-      if (!custom) {
-        sources.push(`https://www.google.com/s2/favicons?domain=${encodeURIComponent(site.hostname)}&sz=128`);
-      }
-      // 从源站根目录读取，不把页面路径、查询参数或 hash 拼进去。
-      sources.push(`${site.origin}/favicon.ico`);
-    }
+    if (!['http:', 'https:'].includes(site.protocol)) return [DEFAULT_LOGO];
+    return [`/api/favicon?url=${encodeURIComponent(site.href)}`, DEFAULT_LOGO];
   } catch {
-    // 无法提取网站域名时仍可使用自定义图片和本地默认图。
+    return [DEFAULT_LOGO];
   }
-
-  sources.push(DEFAULT_LOGO);
-  return [...new Set(sources)];
 }
 
-// 使用 DOM 的 onerror 属性，进入本地保底时可以真正解除错误回调。
 export function loadCardLogo(image, sources, clock = globalThis) {
   let index = 0;
   let timer;
@@ -61,10 +50,7 @@ export function loadCardLogo(image, sources, clock = globalThis) {
       if (!stopped && current === index) stop();
     };
     image.src = source;
-    // 国内访问 Google 可能一直等待而不触发 error，需主动结束等待。
-    const timeout = source.startsWith('https://www.google.com/s2/favicons?')
-      ? GOOGLE_TIMEOUT_MS : LOGO_TIMEOUT_MS;
-    timer = clock.setTimeout(advance, timeout);
+    timer = clock.setTimeout(advance, source.startsWith('/api/favicon?') ? 30000 : LOGO_TIMEOUT_MS);
   }
 
   attempt();

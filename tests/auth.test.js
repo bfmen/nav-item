@@ -117,6 +117,12 @@ test('Cookie 登录、历史记录、过期、退出和广告接口移除', asyn
     assert.equal((await fetch(`${base}/api/users/me`)).status, 401);
     assert.equal((await fetch(`${base}/api/ads`)).status, 404);
     assert.equal((await fetch(`${base}/api/menus`)).status, 200);
+    const favicon = await fetch(`${base}/api/favicon?url=${encodeURIComponent('http://127.0.0.1/metadata')}`, { redirect: 'manual' });
+    assert.equal(favicon.status, 302);
+    assert.equal(favicon.headers.get('location'), '/uploads/default-favicon.png');
+    const localLogo = await fetch(`${base}/uploads/default-favicon.png`);
+    const shibaLogo = require('node:fs').readFileSync(require('node:path').resolve(__dirname, '../uploads/default-favicon.png'));
+    assert.deepEqual(Buffer.from(await localLogo.arrayBuffer()), shibaLogo);
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     delete require.cache[dbPath];

@@ -27,6 +27,7 @@ RUN npm install
 
 COPY app.js config.js db.js ./
 COPY routes/ ./routes/
+COPY uploads/ ./uploads/
 
 COPY --from=frontend-builder /app/dist ./web/dist
 
@@ -34,4 +35,4 @@ ENV NODE_ENV=production
 
 EXPOSE 3000/tcp
 
-CMD ["npm", "start"] 
+CMD ["npm", "start"]
