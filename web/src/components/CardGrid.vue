@@ -4,7 +4,7 @@
          class="link-item" 
          :style="getCardStyle(index)">
       <a :href="card.url" target="_blank" :title="getTooltip(card)">
-        <img class="link-icon" :src="getLogo(card)" alt="" @error="onImgError($event, card)" loading="lazy">
+        <CardLogo class="link-icon" :card="card" />
         <span class="link-text">{{ truncate(card.title) }}</span>
       </a>
     </div>
@@ -13,6 +13,7 @@
 
 <script setup>
 import { ref, watch, nextTick } from 'vue';
+import CardLogo from './CardLogo.vue';
 
 const props = defineProps({ cards: Array });
 
@@ -117,22 +118,6 @@ function getCardStyle(index) {
   }
   
   return {};
-}
-
-function getLogo(card) {
-  if (card.custom_logo_path) return 'http://localhost:3000/uploads/' + card.custom_logo_path;
-  if (card.logo_url) return card.logo_url;
-  // 默认 favicon
-  try {
-    const url = new URL(card.url);
-    return url.origin + '/favicon.ico';
-  } catch {
-    return '/default-favicon.png';
-  }
-}
-
-function onImgError(e, card) {
-  e.target.src = '/default-favicon.png';
 }
 
 function getTooltip(card) {
