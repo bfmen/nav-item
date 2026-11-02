@@ -3,9 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const express = require('express');
+const zlib = require('node:zlib');
 const {
-  parseDeclaredIcons, probe, normalizeInput, isPublicAddress, isValidImage,
-  hasGenericGoogleGlobeSize, createFaviconRouter, requestFollowingRedirects, DEFAULT_LOGO
+  parseDeclaredIcons, probe, normalizeInput, isPublicAddress, isValidImage, getActualImageType,
+  hasGenericGoogleGlobeSize, parseManifestLinks, parseManifestIcons, createFaviconRouter,
+  requestFollowingRedirects, DEFAULT_LOGO
 } = require('../routes/favicon');
 
 const png = fs.readFileSync(path.join(__dirname, '../uploads/default-favicon.png'));
@@ -44,6 +46,60 @@ test('解析 base 和 header/nav Logo；不误选正文图片或空 icon 声明'
   assert.deepEqual(parseDeclaredIcons(html, 'https://site.example/').map(url => url.href), [
     'https://site.example/assets/brand-logo.svg', 'https://site.example/assets/logo.png'
   ]);
+});
+
+test('识别内嵌 data:image SVG favicon 并限制内容类型及字节大小', async () => {
+  const host = 'https://inline.example';
+  const dataIcon = `data:image/svg+xml,${encodeURIComponent(svg.toString())}`;
+  const candidates = parseDeclaredIcons(`<link rel="icon" href="${dataIcon}">`, host + '/');
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].protocol, 'data:');
+  const result = await probe(new URL(host), async url => {
+    if (url.href === host + '/') return response(host, `<link rel="icon" href="${dataIcon}">`, 'text/html');
+    throw new Error('Inline icons must not generate external requests');
+  });
+  assert.equal(result.contentType, 'image/svg+xml');
+  assert.deepEqual(result.body, svg);
+  assert.equal(isValidImage(Buffer.from('<html>bad</html>'), 'image/svg+xml'), false);
+});
+
+test('按文件签名识别错误 MIME 的 favicon，并以真实图片类型代理', () => {
+  assert.equal(getActualImageType(png, 'image/vnd.microsoft.icon'), 'image/png');
+  assert.equal(isValidImage(png, 'image/vnd.microsoft.icon'), true);
+  assert.equal(isValidImage(Buffer.from('<html>404</html>'), 'image/vnd.microsoft.icon'), false);
+  assert.equal(getActualImageType(svg, 'text/html'), null);
+});
+
+test('读取 web manifest 内的图标，并优先选普通图标而不是 maskable 裁切图标', () => {
+  const page = 'https://manifest.example/app/';
+  const manifests = parseManifestLinks('<link rel="manifest" href="site.webmanifest">', page);
+  assert.equal(manifests[0].href, 'https://manifest.example/app/site.webmanifest');
+  const icons = parseManifestIcons({ icons: [
+    { src: '/maskable.png', purpose: 'maskable', sizes: '512x512' },
+    { src: 'icons/app-192.png', purpose: 'any', sizes: '192x192' }
+  ] }, manifests[0]);
+  assert.deepEqual(icons.map(url => url.href), [
+    'https://manifest.example/app/icons/app-192.png', 'https://manifest.example/maskable.png'
+  ]);
+});
+
+test('gzip / deflate / brotli 压缩的首页 HTML 都能继续解析图标', async () => {
+  const host = 'https://compressed.example';
+  const html = '<link rel="icon" href="/assets/site.ico">';
+  const iconUrl = host + '/assets/site.ico';
+  for (const [encoding, compress] of [
+    ['gzip', zlib.gzipSync], ['deflate', zlib.deflateSync], ['br', zlib.brotliCompressSync]
+  ]) {
+    const result = await probe(new URL(host), async url => {
+      if (url.href === host + '/') return {
+        status: 200, url: new URL(host + '/'), headers: { 'content-type': 'text/html', 'content-encoding': encoding },
+        body: compress(Buffer.from(html))
+      };
+      if (url.href === iconUrl) return response(iconUrl, png, 'image/png');
+      throw new Error(`Unexpected probe: ${url.href}`);
+    });
+    assert.equal(result.source, iconUrl, encoding);
+  }
 });
 
 test('通用探测覆盖深层 ico、SVG 声明和根目录 logo.png，声明成功后不访问 Google', async () => {
@@ -92,7 +148,7 @@ test('Google 404 携带合法图片仍拒绝，200 的 16×16 占位图也拒绝
     }, calls));
     assert.equal(result, null);
     assert.equal(calls.at(-1), google);
-    assert.equal(calls.length, 8);
+    assert.equal(calls.length, 20);
   }
 });
 
@@ -103,7 +159,17 @@ test('Google 有效大图仅在前两级全部失败之后使用', async () => {
   const icon = await probe(new URL(host), fixture({ [google]: response(google, png) }, calls));
   assert.equal(icon.source, google);
   assert.equal(calls.at(-1), google);
-  assert.equal(calls.length, 8);
+  assert.equal(calls.length, 20);
+});
+
+test('声明缺失时探测 header / nav 图片和 class 标注的 inline SVG Logo，不选普通正文图片', () => {
+  const html = `<main><img src="/article-logo.png"></main>
+    <header><img data-src="/images/header-brand.webp" alt="Site"></header>
+    <div class="brand"><svg viewBox="0 0 10 10"><path d="M0 0h10v10H0z"/></svg></div>`;
+  const result = parseDeclaredIcons(html, 'https://brand.example/').map(url => url.href);
+  assert.deepEqual(result.slice(0, 1), ['https://brand.example/images/header-brand.webp']);
+  assert.equal(result.length, 2);
+  assert.match(decodeURIComponent(result[1]), /^data:image\/svg\+xml,<svg[^>]*viewbox="0 0 10 10"/i);
 });
 
 test('无效图片、假图片 HTML、空内容及错误 Content-Type 不得阻断后续回退', () => {

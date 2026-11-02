@@ -6,6 +6,7 @@ const net = require('net');
 const path = require('path');
 const fs = require('fs').promises;
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { Parser } = require('htmlparser2');
 
 const DEFAULT_LOGO = '/uploads/default-favicon.png';
@@ -19,11 +20,15 @@ const MAX_REDIRECTS = 5;
 const CACHE_LIMIT = 500;
 const CACHE_MEMORY_BYTES = 32 * 1024 * 1024;
 const CACHE_DIRECTORY = path.join(__dirname, '..', 'database', 'favicon-cache');
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v5';
 const PROBE_BUDGET_MS = 20000;
 const DNS_TIMEOUT_MS = 2000;
 const commonIconPaths = [
-  '/favicon.ico', '/favicon.png', '/favicon.svg', '/logo.png', '/logo.svg', '/apple-touch-icon.png'
+  '/favicon.ico', '/favicon.png', '/favicon.svg', '/logo.png', '/logo.svg', '/apple-touch-icon.png',
+  '/apple-touch-icon-precomposed.png', '/favicon-32x32.png', '/favicon-16x16.png',
+  '/assets/favicon.ico', '/assets/favicon.png', '/assets/favicon.svg',
+  '/images/favicon.ico', '/images/favicon.png', '/images/favicon.svg',
+  '/static/favicon.ico', '/static/favicon.png', '/static/favicon.svg'
 ];
 const imageTypes = new Set([
   'image/avif', 'image/apng', 'image/bmp', 'image/gif', 'image/icon', 'image/vnd.microsoft.icon',
@@ -99,7 +104,7 @@ async function requestOnce(url, { maxBytes, timeoutMs, accept }) {
       headers: {
         'User-Agent': 'NavItem-Favicon-Fetcher/1.0 (+https://github.com/eooce/Nav-Item)',
         Accept: accept,
-        'Accept-Encoding': 'identity',
+        'Accept-Encoding': 'gzip, deflate, br',
         Connection: 'close'
       }
     }, response => {
@@ -154,24 +159,45 @@ async function requestFollowingRedirects(startUrl, options) {
   throw new Error('目标重定向过多');
 }
 
+function sniffImageType(body) {
+  if (!Buffer.isBuffer(body) || body.length === 0) return null;
+  if (body.length >= 8 && body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png';
+  if (body.length >= 3 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) return 'image/jpeg';
+  if (body.length >= 6 && /^GIF8[79]a$/.test(body.subarray(0, 6).toString('ascii'))) return 'image/gif';
+  if (body.length >= 12 && body.toString('ascii', 0, 4) === 'RIFF' && body.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  if (body.length >= 6 && body.readUInt16LE(0) === 0 && body.readUInt16LE(2) === 1) return 'image/x-icon';
+  if (body.length >= 2 && body.toString('ascii', 0, 2) === 'BM') return 'image/bmp';
+  if (body.length >= 12 && body.toString('ascii', 4, 8) === 'ftyp' && body.toString('ascii', 8, 12).startsWith('avif')) return 'image/avif';
+  const text = body.subarray(0, 4096).toString('utf8')
+    .replace(/^\uFEFF/, '').replace(/^\s*(?:<\?xml[^>]*>\s*)?(?:<!doctype[^>]*>\s*)?/i, '')
+    .replace(/<!--[^]*?-->/g, '').trimStart();
+  if (/^<svg(?:\s|>)/i.test(text)) return 'image/svg+xml';
+  return null;
+}
+
+function getActualImageType(body, contentType) {
+  const declared = (contentType || '').split(';', 1)[0].trim().toLowerCase();
+  if (!imageTypes.has(declared) && declared !== 'application/octet-stream') return null;
+  return sniffImageType(body);
+}
+
 function isValidImage(body, contentType) {
   if (!Buffer.isBuffer(body) || body.length === 0) return false;
   const type = (contentType || '').split(';', 1)[0].trim().toLowerCase();
-  if (!imageTypes.has(type)) return false;
-  if (type === 'image/svg+xml') {
+  const actualType = getActualImageType(body, type);
+  if (!actualType) return false;
+  // Content-Type is often wrong for favicons; accept only when the bytes independently
+  // identify a real image, and let the proxy serve it with its detected MIME type.
+  if (type !== actualType && !(type === 'image/vnd.microsoft.icon' && actualType === 'image/png')
+    && !(type === 'image/apng' && actualType === 'image/png')) return false;
+  const validatedType = actualType;
+  if (validatedType === 'image/svg+xml') {
     const prefix = body.subarray(0, 4096).toString('utf8')
       .replace(/^\uFEFF/, '').replace(/^\s*(?:<\?xml[^>]*>\s*)?(?:<!doctype[^>]*>\s*)?/i, '')
       .replace(/<!--[^]*?-->/g, '').trimStart();
     return /^<svg(?:\s|>)/i.test(prefix);
   }
-  if (type === 'image/png' || type === 'image/apng') return body.length >= 8 && body.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-  if (type === 'image/jpeg') return body.length >= 3 && body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff;
-  if (type === 'image/gif') return /^GIF8[79]a/.test(body.subarray(0, 6).toString('ascii'));
-  if (type === 'image/webp') return body.length >= 12 && body.toString('ascii', 0, 4) === 'RIFF' && body.toString('ascii', 8, 12) === 'WEBP';
-  if (type === 'image/icon' || type === 'image/x-icon' || type === 'image/vnd.microsoft.icon') return body.length >= 6 && body.readUInt16LE(0) === 0 && body.readUInt16LE(2) === 1;
-  if (type === 'image/bmp') return body.length >= 2 && body.toString('ascii', 0, 2) === 'BM';
-  if (type === 'image/avif') return body.length >= 12 && body.toString('ascii', 4, 8) === 'ftyp' && body.toString('ascii', 8, 12).startsWith('avif');
-  return false;
+  return imageTypes.has(validatedType) || validatedType === 'image/x-icon';
 }
 
 function parseDeclaredIcons(html, pageUrl) {
@@ -180,14 +206,25 @@ function parseDeclaredIcons(html, pageUrl) {
   const appleLinks = [];
   const socialImages = [];
   const logoImages = [];
+  const inlineLogoImages = [];
   let inHead = false;
   let headerNavDepth = 0;
   let documentBase = new URL(pageUrl);
   let hasBase = false;
+  const elementStack = [];
+  let svgCapture = null;
+
+  const escapeAttribute = value => String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const serializeAttributes = attrs => Object.entries(attrs)
+    .map(([key, value]) => ` ${key}="${escapeAttribute(value)}"`).join('');
 
   const parser = new Parser({
     onopentag(name, attrs) {
       const tag = name.toLowerCase();
+      if (svgCapture) {
+        svgCapture.markup += `<${tag}${serializeAttributes(attrs)}>`;
+        svgCapture.depth++;
+      }
       if (tag === 'head') inHead = true;
       if (tag === 'header' || tag === 'nav') headerNavDepth++;
       if (tag === 'base' && attrs.href && !hasBase) {
@@ -203,50 +240,201 @@ function parseDeclaredIcons(html, pageUrl) {
         const rels = (attrs.rel || '').toLowerCase().split(/\s+/);
         const href = (attrs.href || '').trim();
         if (!href) return;
+        if (rels.includes('stylesheet')) {
+          try {
+            const stylesheet = new URL(href, documentBase);
+          } catch { /* Ignore malformed stylesheet URLs. */ }
+        }
         if (rels.includes('shortcut') && rels.includes('icon')) shortcutIconLinks.push(href);
         else if (rels.includes('icon')) iconLinks.push(href);
         else if (rels.includes('apple-touch-icon') || rels.includes('apple-touch-icon-precomposed')) appleLinks.push(href);
       }
-      if (tag === 'meta' && (attrs.property || '').toLowerCase() === 'og:image' && attrs.content) {
+      if (tag === 'meta' && ['og:image', 'twitter:image', 'image'].includes((attrs.property || attrs.name || attrs.itemprop || '').toLowerCase()) && attrs.content) {
         socialImages.push(attrs.content.trim());
       }
-      if (tag === 'img' && (headerNavDepth > 0 || inHead)) {
-        const text = `${attrs.src || ''} ${attrs.alt || ''} ${attrs.class || ''} ${attrs.id || ''}`;
-        if (/logo/i.test(text) && attrs.src) logoImages.push(attrs.src.trim());
+      if (tag === 'img' || tag === 'source') {
+        const sources = [attrs.src, attrs['data-src'], attrs['data-lazy-src'], attrs['data-original']]
+          .filter(Boolean).map(value => value.trim());
+        const srcset = attrs.srcset || attrs['data-srcset'] || '';
+        for (const candidate of srcset.split(',')) {
+          const source = candidate.trim().split(/\s+/, 1)[0];
+          if (source) sources.push(source);
+        }
+        const text = `${attrs.alt || ''} ${attrs.class || ''} ${attrs.id || ''} ${attrs.title || ''}`;
+        if (headerNavDepth > 0 || inHead || /logo|brand|site.?icon/i.test(text)) {
+          logoImages.push(...sources);
+        }
       }
+      if (!svgCapture && tag === 'svg') {
+        const marker = `${attrs.class || ''} ${attrs.id || ''} ${attrs['aria-label'] || ''} ${attrs.title || ''}`;
+        const inBrandedContainer = elementStack.some(element => /logo|brand/i.test(`${element.class || ''} ${element.id || ''}`));
+        if (/logo|brand/i.test(marker) || inBrandedContainer) {
+          svgCapture = { depth: 1, markup: `<svg${serializeAttributes(attrs)}>` };
+        }
+      }
+      elementStack.push({ tag, class: attrs.class || '', id: attrs.id || '' });
+    },
+    ontext(text) {
+      if (svgCapture) svgCapture.markup += text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     },
     onclosetag(name) {
       const tag = name.toLowerCase();
+      if (svgCapture) {
+        svgCapture.markup += `</${tag}>`;
+        svgCapture.depth--;
+        if (svgCapture.depth === 0) {
+          inlineLogoImages.push(`data:image/svg+xml,${encodeURIComponent(svgCapture.markup)}`);
+          svgCapture = null;
+        }
+      }
       if (tag === 'head') inHead = false;
       if (tag === 'header' || tag === 'nav') headerNavDepth = Math.max(0, headerNavDepth - 1);
+      for (let index = elementStack.length - 1; index >= 0; index--) {
+        if (elementStack[index].tag === tag) {
+          elementStack.length = index;
+          break;
+        }
+      }
     }
   }, { decodeEntities: true, lowerCaseTags: true, lowerCaseAttributeNames: true });
   parser.write(html);
   parser.end();
 
-  const candidates = [...shortcutIconLinks, ...iconLinks, ...appleLinks, ...socialImages,
-    ...(shortcutIconLinks.length || iconLinks.length ? [] : logoImages)];
+  const candidates = [
+    ...shortcutIconLinks, ...iconLinks, ...appleLinks, ...socialImages,
+    ...((shortcutIconLinks.length || iconLinks.length) ? [] : logoImages),
+    ...inlineLogoImages
+  ];
   return [...new Set(candidates)]
     .map(candidate => {
       try {
         const resolved = new URL(candidate, documentBase);
-        return ['http:', 'https:'].includes(resolved.protocol) ? resolved : null;
+        if (['http:', 'https:'].includes(resolved.protocol)) return resolved;
+        if (resolved.protocol === 'data:' && /^data:image\/(?:svg\+xml|png|gif|webp|jpeg|x-icon|vnd\.microsoft\.icon)/i.test(candidate)) return resolved;
+        return null;
       } catch {
         return null;
       }
+    }).filter(Boolean)
+    .filter((url, index, values) => values.findIndex(item => item.href === url.href) === index)
+    .slice(0, 24);
+}
+
+function parseCssImageUrls(css, stylesheetUrl) {
+  const urls = [];
+  const pattern = /url\(\s*["']?([^"')\s]+)["']?\s*\)/gi;
+  for (const match of css.matchAll(pattern)) {
+    const value = match[1];
+    if (/^(?:data:|javascript:|#)/i.test(value)) continue;
+    try {
+      const resolved = new URL(value, stylesheetUrl);
+      if (['http:', 'https:'].includes(resolved.protocol)) urls.push(resolved);
+    } catch { /* Ignore malformed CSS URLs. */ }
+  }
+  return [...new Map(urls.map(url => [url.href, url])).values()].slice(0, 24);
+}
+
+function parseStylesheetLinks(html, pageUrl) {
+  const links = [];
+  const parser = new Parser({
+    onopentag(name, attrs) {
+      if (name.toLowerCase() !== 'link' || !attrs.href) return;
+      const rels = (attrs.rel || '').toLowerCase().split(/\s+/);
+      if (!rels.includes('stylesheet')) return;
+      try {
+        const url = new URL(attrs.href, pageUrl);
+        if (['http:', 'https:'].includes(url.protocol)) links.push(url);
+      } catch { /* Ignore malformed stylesheet URLs. */ }
+    }
+  }, { decodeEntities: true, lowerCaseTags: true, lowerCaseAttributeNames: true });
+  parser.write(html); parser.end();
+  return [...new Map(links.map(url => [url.href, url])).values()].slice(0, 4);
+}
+
+function parseManifestLinks(html, pageUrl) {
+  const manifests = [];
+  const parser = new Parser({
+    onopentag(name, attrs) {
+      if (name.toLowerCase() !== 'link' || !attrs.href) return;
+      const rels = (attrs.rel || '').toLowerCase().split(/\s+/);
+      if (!rels.includes('manifest')) return;
+      try {
+        const url = new URL(attrs.href, pageUrl);
+        if (['http:', 'https:'].includes(url.protocol)) manifests.push(url);
+      } catch { /* Ignore malformed manifest links. */ }
+    }
+  }, { decodeEntities: true, lowerCaseTags: true, lowerCaseAttributeNames: true });
+  parser.write(html);
+  parser.end();
+  return [...new Map(manifests.map(url => [url.href, url])).values()].slice(0, 3);
+}
+
+function parseManifestIcons(manifest, manifestUrl) {
+  if (!manifest || !Array.isArray(manifest.icons)) return [];
+  return manifest.icons.map((icon, index) => ({ icon, index }))
+    .filter(({ icon }) => typeof icon.src === 'string' && icon.src.trim())
+    .sort((a, b) => {
+      const maskable = icon => /maskable/.test(icon.purpose || '');
+      return Number(maskable(a.icon)) - Number(maskable(b.icon)) || b.index - a.index;
+    })
+    .map(({ icon }) => {
+      try {
+        const url = new URL(icon.src, manifestUrl);
+        return ['http:', 'https:', 'data:'].includes(url.protocol) ? url : null;
+      } catch { return null; }
     }).filter(Boolean).slice(0, 24);
 }
 
 async function fetchValidImage(url, { google = false } = {}, requester = requestFollowingRedirects) {
-  const result = await requester(url, {
-    maxBytes: IMAGE_MAX_BYTES, timeoutMs: IMAGE_TIMEOUT_MS, accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
-  });
-  if (result.status !== 200) return null;
-  const contentType = (result.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
-  if (!isValidImage(result.body, contentType)) return null;
+  let body;
+  let contentType;
+  let source;
+  if (url.protocol === 'data:') {
+    const inline = decodeDataImage(url);
+    if (!inline) return null;
+    ({ body, contentType, source } = inline);
+  } else {
+    const result = await requester(url, {
+      maxBytes: IMAGE_MAX_BYTES, timeoutMs: IMAGE_TIMEOUT_MS, accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
+    });
+    if (result.status !== 200) return null;
+    body = result.body;
+    contentType = (result.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+    source = result.url.href;
+  }
+  const actualType = getActualImageType(body, contentType);
+  if (!isValidImage(body, contentType) || !actualType) return null;
   // Google's uncatalogued-domain response is a generic 16×16 globe, not a site logo.
-  if (google && hasGenericGoogleGlobeSize(result.body, contentType)) return null;
-  return { body: result.body, contentType, source: result.url.href };
+  if (google && hasGenericGoogleGlobeSize(body, actualType)) return null;
+  return { body, contentType: actualType, source };
+}
+
+function decodeDataImage(url) {
+  if (url.href.length > IMAGE_MAX_BYTES * 1.5) return null;
+  const raw = url.href.slice(5);
+  const comma = raw.indexOf(',');
+  if (comma < 0) return null;
+  const metadata = raw.slice(0, comma).split(';');
+  const contentType = (metadata[0] || '').toLowerCase();
+  if (!contentType.startsWith('image/')) return null;
+  try {
+    const payload = raw.slice(comma + 1);
+    const body = metadata.some(part => part.toLowerCase() === 'base64')
+      ? Buffer.from(payload, 'base64') : Buffer.from(decodeURIComponent(payload));
+    if (!body.length || body.length > IMAGE_MAX_BYTES || !isValidImage(body, contentType)) return null;
+    return { body, contentType: getActualImageType(body, contentType), source: 'inline data image' };
+  } catch { return null; }
+}
+
+function decodeHtmlBody(result) {
+  const encoding = (result.headers['content-encoding'] || '').trim().toLowerCase();
+  try {
+    if (encoding === 'gzip' || encoding === 'x-gzip') return zlib.gunzipSync(result.body, { maxOutputLength: HTML_MAX_BYTES });
+    if (encoding === 'deflate') return zlib.inflateSync(result.body, { maxOutputLength: HTML_MAX_BYTES });
+    if (encoding === 'br') return zlib.brotliDecompressSync(result.body, { maxOutputLength: HTML_MAX_BYTES });
+    if (!encoding || encoding === 'identity') return result.body;
+  } catch { return null; }
+  return null;
 }
 
 function hasGenericGoogleGlobeSize(body, type) {
@@ -278,7 +466,9 @@ async function getPage(url, requester = requestFollowingRedirects) {
   });
   const contentType = (result.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
   if (result.status !== 200 || !['text/html', 'application/xhtml+xml'].includes(contentType)) return null;
-  return { html: result.body.toString('utf8'), url: result.url };
+  const body = decodeHtmlBody(result);
+  if (!body) return null;
+  return { html: body.toString('utf8'), url: result.url };
 }
 
 async function probe(url, requester = requestFollowingRedirects) {
@@ -298,6 +488,43 @@ async function probe(url, requester = requestFollowingRedirects) {
           const icon = await fetchValidImage(candidate, {}, budgetedRequest);
           if (icon) return icon;
         } catch { /* Try the next declared image. */ }
+      }
+      // A logo can be supplied through CSS (background-image, mask-image or a
+      // framework sprite) without an <img>. Probe branding-like assets from
+      // linked stylesheets after explicit HTML declarations.
+      for (const stylesheetUrl of parseStylesheetLinks(page.html, page.url)) {
+        try {
+          const stylesheet = await budgetedRequest(stylesheetUrl, {
+            maxBytes: HTML_MAX_BYTES, timeoutMs: 3000, accept: 'text/css,*/*;q=0.2'
+          });
+          if (stylesheet.status !== 200) continue;
+          const cssBody = decodeHtmlBody(stylesheet);
+          if (!cssBody) continue;
+          for (const candidate of parseCssImageUrls(cssBody.toString('utf8'), stylesheet.url)
+            .filter(candidate => /logo|brand|favicon|icon/i.test(candidate.pathname))) {
+            try {
+              const icon = await fetchValidImage(candidate, {}, budgetedRequest);
+              if (icon) return icon;
+            } catch { /* Continue with the next CSS asset. */ }
+          }
+        } catch { /* Continue with manifests and conventional paths. */ }
+      }
+      for (const manifestUrl of parseManifestLinks(page.html, page.url)) {
+        try {
+          const manifestResponse = await budgetedRequest(manifestUrl, {
+            maxBytes: HTML_MAX_BYTES, timeoutMs: 3000, accept: 'application/manifest+json,application/json,*/*;q=0.5'
+          });
+          if (manifestResponse.status !== 200) continue;
+          const manifestBody = decodeHtmlBody(manifestResponse);
+          if (!manifestBody) continue;
+          const manifest = JSON.parse(manifestBody.toString('utf8'));
+          for (const candidate of parseManifestIcons(manifest, manifestResponse.url)) {
+            try {
+              const icon = await fetchValidImage(candidate, {}, budgetedRequest);
+              if (icon) return icon;
+            } catch { /* Try the next manifest icon. */ }
+          }
+        } catch { /* Static icons remain available if the manifest is inaccessible. */ }
       }
     }
   } catch { /* An inaccessible page can still expose a conventional favicon. */ }
@@ -438,4 +665,4 @@ function createFaviconRouter(finder = findFavicon) {
   return router;
 }
 
-module.exports = { createFaviconRouter, findFavicon, normalizeInput, parseDeclaredIcons, isValidImage, hasGenericGoogleGlobeSize, probe, isPublicAddress, requestFollowingRedirects, DEFAULT_LOGO };
+module.exports = { createFaviconRouter, findFavicon, normalizeInput, parseDeclaredIcons, parseManifestLinks, parseManifestIcons, parseCssImageUrls, parseStylesheetLinks, isValidImage, getActualImageType, hasGenericGoogleGlobeSize, probe, isPublicAddress, requestFollowingRedirects, DEFAULT_LOGO };
