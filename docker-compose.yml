@@ -1,0 +1,15 @@
+version: '3'
+
+services:
+  nav-item:
+    image: eooce/nav-item
+    container_name: nav-item
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000             # 监听端口
+      - ADMIN_USERNAME=admin  # 后台用户名
+      - ADMIN_PASSWORD=123456 # 后台密码
+    volumes:
+      - ./database:/app/database  # 持久化数据库文件
+    restart: unless-stopped
