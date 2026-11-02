@@ -49,16 +49,13 @@ db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL
+    password TEXT NOT NULL,
+    current_login_at TEXT,
+    current_login_ip TEXT,
+    last_login_at TEXT,
+    last_login_ip TEXT
   )`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)`);
-  db.run(`CREATE TABLE IF NOT EXISTS ads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    position TEXT NOT NULL, -- left/right
-    img TEXT NOT NULL,
-    url TEXT NOT NULL
-  )`);
-  db.run(`CREATE INDEX IF NOT EXISTS idx_ads_position ON ads(position)`);
   db.run(`CREATE TABLE IF NOT EXISTS friends (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
@@ -287,9 +284,34 @@ db.serialize(() => {
     }
   });
 
-  db.run(`ALTER TABLE users ADD COLUMN last_login_time TEXT`, [], () => {});
-  db.run(`ALTER TABLE users ADD COLUMN last_login_ip TEXT`, [], () => {});
 });
 
+// 旧版本的 last_login_time / last_login_ip 实际保存的是最近一次登录。
+// 只迁移一次，保留这条记录为本次登录，避免误当作前一次登录。
+db.ready = new Promise((resolve, reject) => {
+  db.all('PRAGMA table_info(users)', (err, columns) => {
+    if (err) return reject(err);
+    const names = new Set(columns.map(column => column.name));
+    const fields = ['current_login_at', 'current_login_ip', 'last_login_at', 'last_login_ip'];
+    db.serialize(() => {
+      for (const field of fields) {
+        if (!names.has(field)) db.run(`ALTER TABLE users ADD COLUMN ${field} TEXT`, err => {
+          if (err) reject(err);
+        });
+      }
+      if (!names.has('current_login_at') && names.has('last_login_time')) {
+        const legacyIp = names.has('last_login_ip') ? 'last_login_ip' : 'NULL';
+        db.run(`UPDATE users SET current_login_at=last_login_time,
+          current_login_ip=${legacyIp}, last_login_at=NULL, last_login_ip=NULL`, err => {
+          if (err) reject(err);
+        });
+      }
+      db.get('SELECT current_login_at, current_login_ip, last_login_at, last_login_ip FROM users LIMIT 1', err => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  });
+});
 
 module.exports = db; 

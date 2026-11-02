@@ -20,7 +20,7 @@ router.get('/profile', authMiddleware, (req, res) => {
 
 // 获取当前用户详细信息（包括登录信息）
 router.get('/me', authMiddleware, (req, res) => {
-  db.get('SELECT id, username, last_login_time, last_login_ip FROM users WHERE id = ?', [req.user.id], (err, user) => {
+  db.get('SELECT id, username, current_login_at, current_login_ip, last_login_at, last_login_ip FROM users WHERE id = ?', [req.user.id], (err, user) => {
     if (err) {
       return res.status(500).json({ message: '服务器错误' });
     }
@@ -28,7 +28,9 @@ router.get('/me', authMiddleware, (req, res) => {
       return res.status(404).json({ message: '用户不存在' });
     }
     res.json({
-      last_login_time: user.last_login_time,
+      current_login_at: user.current_login_at,
+      current_login_ip: user.current_login_ip,
+      last_login_at: user.last_login_at,
       last_login_ip: user.last_login_ip
     });
   });
@@ -104,4 +106,4 @@ router.get('/', authMiddleware, (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = router;

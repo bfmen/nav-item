@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const router = express.Router();
 
-const JWT_SECRET = 'your_jwt_secret_key';
+const { COOKIE_NAME, SESSION_SECONDS, JWT_SECRET, COOKIE_OPTIONS, clearSession } = require('./session');
 
 function getClientIp(req) {
   let ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress || '';
@@ -30,20 +30,28 @@ function getShanghaiTime() {
 }
 
 router.post('/login', (req, res) => {
-  const { username, password } = req.body;
+  const { username, password } = req.body || {};
+  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
+    return res.status(400).json({ error: '请输入用户名和密码' });
+  }
   db.get('SELECT * FROM users WHERE username=?', [username], (err, user) => {
     if (err || !user) return res.status(401).json({ error: '用户名或密码错误' });
     bcrypt.compare(password, user.password, (err, result) => {
+      if (err) return res.status(500).json({ error: '登录失败，请稍后重试' });
       if (result) {
-        // 记录上次登录时间和IP
-        const lastLoginTime = user.last_login_time;
-        const lastLoginIp = user.last_login_ip;
-        // 更新为本次登录（上海时间）
         const now = getShanghaiTime();
         const ip = getClientIp(req);
-        db.run('UPDATE users SET last_login_time=?, last_login_ip=? WHERE id=?', [now, ip, user.id]);
-        const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '2h' });
-        res.json({ token, lastLoginTime, lastLoginIp });
+        // 在同一条语句中将本次记录移到历史记录，刷新页面不会再更新它。
+        db.run(`UPDATE users SET last_login_at=current_login_at, last_login_ip=current_login_ip,
+          current_login_at=?, current_login_ip=? WHERE id=?`, [now, ip, user.id], (err) => {
+          if (err) return res.status(500).json({ error: '保存登录记录失败' });
+          db.get('SELECT last_login_at, last_login_ip FROM users WHERE id=?', [user.id], (err, info) => {
+            if (err || !info) return res.status(500).json({ error: '获取登录记录失败' });
+            const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: SESSION_SECONDS });
+            res.cookie(COOKIE_NAME, token, { ...COOKIE_OPTIONS, maxAge: SESSION_SECONDS * 1000 });
+            res.json(info);
+          });
+        });
       } else {
         res.status(401).json({ error: '用户名或密码错误' });
       }
@@ -51,4 +59,9 @@ router.post('/login', (req, res) => {
   });
 });
 
-module.exports = router; 
+router.post('/logout', (req, res) => {
+  clearSession(res);
+  res.json({ message: '已退出登录' });
+});
+
+module.exports = router;

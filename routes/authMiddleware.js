@@ -1,19 +1,22 @@
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = 'your_jwt_secret_key';
+const { COOKIE_NAME, JWT_SECRET, clearSession } = require('./session');
 
 function authMiddleware(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) {
-    return res.status(401).json({ error: '未授权' });
-  }
-  const token = auth.slice(7);
   try {
+    const cookie = (req.headers.cookie || '').split(';')
+      .map(value => value.trim()).find(value => value.startsWith(`${COOKIE_NAME}=`));
+    if (!cookie) {
+      clearSession(res);
+      return res.status(401).json({ error: '请重新登录' });
+    }
+    const token = decodeURIComponent(cookie.slice(COOKIE_NAME.length + 1));
     const payload = jwt.verify(token, JWT_SECRET);
     req.user = payload;
     next();
   } catch (e) {
-    return res.status(401).json({ error: '无效token' });
+    clearSession(res);
+    return res.status(401).json({ error: '登录已过期，请重新登录' });
   }
 }
 
-module.exports = authMiddleware; 
+module.exports = authMiddleware;

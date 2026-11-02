@@ -33,7 +33,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue';
-import { getUserProfile, changePassword } from '../../api';
+import { getUserProfile, changePassword, logout } from '../../api';
 
 const oldPassword = ref('');
 const newPassword = ref('');
@@ -90,9 +90,15 @@ function showMessage(text, type) {
   if (text === '密码修改成功' && type === 'success') {
     setTimeout(() => {
       message.value = '2秒后自动退出登录,请使用新密码重新登录...';
-      setTimeout(() => {
-        localStorage.removeItem('token');
-        window.location.reload();
+      setTimeout(async () => {
+        try {
+          await logout();
+          localStorage.removeItem('token');
+          window.location.reload();
+        } catch (error) {
+          message.value = '自动退出失败，请点击退出登录重试';
+          messageType.value = 'error';
+        }
       }, 2000);
     }, 500);
   } else {
@@ -241,4 +247,4 @@ function showMessage(text, type) {
     font-size: 14px;
   }
 }
-</style> 
+</style>

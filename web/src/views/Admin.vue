@@ -1,5 +1,6 @@
 <template>
-  <div v-if="!isLoggedIn" class="login-container">
+  <div v-if="checkingSession" class="login-container" role="status">正在验证登录状态...</div>
+  <div v-else-if="!isLoggedIn" class="login-container">
     <div class="login-card">
       <h2 class="login-title">后台管理登录</h2>
       <div class="login-form">
@@ -39,7 +40,6 @@
       <ul class="menu-list">
         <li :class="{active: page==='menu'}" @click="page='menu'; closeSider()">栏目管理</li>
         <li :class="{active: page==='card'}" @click="page='card'; closeSider()">卡片管理</li>
-        <li :class="{active: page==='ad'}" @click="page='ad'; closeSider()">广告管理</li>
         <li :class="{active: page==='friend'}" @click="page='friend'; closeSider()">友链管理</li>
         <li :class="{active: page==='user'}" @click="page='user'; closeSider()">用户管理</li>
       </ul>
@@ -66,20 +66,19 @@
                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#1abc9c" stroke-width="2"/><path d="M12 6v6l4 2" stroke="#1abc9c" stroke-width="2" stroke-linecap="round"/></svg>
               </div>
               <div class="welcome-label">上次登录时间</div>
-              <div class="welcome-value">{{ lastLoginTime || '--' }}</div>
+              <div class="welcome-value">{{ lastLoginTime || '首次登录' }}</div>
             </div>
             <div class="welcome-card">
               <div class="welcome-icon ip-icon">
                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="#1abc9c" stroke-width="2"/><path d="M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" stroke="#1abc9c" stroke-width="2"/><circle cx="12" cy="12" r="2" fill="#1abc9c"/></svg>
               </div>
               <div class="welcome-label">上次登录IP</div>
-              <div class="welcome-value">{{ lastLoginIp || '--' }}</div>
+              <div class="welcome-value">{{ lastLoginIp || '暂无历史记录' }}</div>
             </div>
           </div>
         </div>
         <MenuManage v-if="page==='menu'" />
         <CardManage v-if="page==='card'" />
-        <AdManage v-if="page==='ad'" />
         <FriendLinkManage v-if="page==='friend'" />
         <UserManage v-if="page==='user'" />
       </div>
@@ -91,11 +90,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
-import { login } from '../api';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { login, logout as apiLogout, getLoginInfo } from '../api';
 import MenuManage from './admin/MenuManage.vue';
 import CardManage from './admin/CardManage.vue';
-import AdManage from './admin/AdManage.vue';
 import FriendLinkManage from './admin/FriendLinkManage.vue';
 import UserManage from './admin/UserManage.vue';
 
@@ -103,6 +101,7 @@ const page = ref('welcome');
 const lastLoginTime = ref('');
 const lastLoginIp = ref('');
 const isLoggedIn = ref(false);
+const checkingSession = ref(true);
 const username = ref('');
 const password = ref('');
 const loading = ref(false);
@@ -114,35 +113,41 @@ const pageTitle = computed(() => {
   switch (page.value) {
     case 'menu': return '栏目管理';
     case 'card': return '卡片管理';
-    case 'ad': return '广告管理';
     case 'friend': return '友链管理';
     case 'user': return '用户管理';
     default: return '';
   }
 });
 
-onMounted(() => {
-  const token = localStorage.getItem('token');
-  isLoggedIn.value = !!token;
-  if (isLoggedIn.value) {
-    // 拉取用户信息
-    fetchLastLoginInfo();
-  }
-});
-async function fetchLastLoginInfo() {
-  try {
-    const res = await fetch('/api/users/me', { headers: { Authorization: `Bearer ${localStorage.getItem('token')}` } });
-    if (res.ok) {
-      const data = await res.json();
-      lastLoginTime.value = data.last_login_time || '';
-      lastLoginIp.value = data.last_login_ip || '';
-    }
-  } catch (error) {
-    console.error('获取用户信息失败:', error);
-  }
+function resetSession() {
+  isLoggedIn.value = false;
+  page.value = 'welcome';
+  lastLoginTime.value = '';
+  lastLoginIp.value = '';
+  password.value = '';
+  siderOpen.value = false;
+  localStorage.removeItem('token');
 }
 
+onMounted(async () => {
+  window.addEventListener('auth:unauthorized', resetSession);
+  localStorage.removeItem('token');
+  try {
+    const { data } = await getLoginInfo();
+    lastLoginTime.value = data.last_login_at || '';
+    lastLoginIp.value = data.last_login_ip || '';
+    isLoggedIn.value = true;
+  } catch (error) {
+    if (error.response?.status !== 401) loginError.value = '无法验证登录状态，请稍后重试';
+  } finally {
+    checkingSession.value = false;
+  }
+});
+
+onBeforeUnmount(() => window.removeEventListener('auth:unauthorized', resetSession));
+
 async function handleLogin() {
+  if (loading.value) return;
   if (!username.value || !password.value) {
     loginError.value = '请输入用户名和密码';
     return;
@@ -152,26 +157,29 @@ async function handleLogin() {
   loginError.value = '';
   
   try {
-    const response = await login(username.value, password.value);
-    if (response.data.token) {
-      localStorage.setItem('token', response.data.token);
-      isLoggedIn.value = true;
-      lastLoginTime.value = response.data.lastLoginTime || '';
-      lastLoginIp.value = response.data.lastLoginIp || '';
-    }
+    await login(username.value, password.value);
+    // 确认浏览器已接受 Cookie 后再进入后台。
+    const { data } = await getLoginInfo();
+    isLoggedIn.value = true;
+    lastLoginTime.value = data.last_login_at || '';
+    lastLoginIp.value = data.last_login_ip || '';
+    password.value = '';
   } catch (error) {
-    loginError.value = error.response?.data?.message || '登录失败，请检查用户名和密码';
+    loginError.value = error.response?.data?.message || error.response?.data?.error || '登录失败，请检查用户名和密码';
   } finally {
     loading.value = false;
   }
 }
 
-function logout() {
-  localStorage.removeItem('token');
-  isLoggedIn.value = false;
-  username.value = '';
-  password.value = '';
-  loginError.value = '';
+async function logout() {
+  try {
+    await apiLogout();
+    resetSession();
+    username.value = '';
+    loginError.value = '';
+  } catch (error) {
+    window.alert('退出登录失败，请重试');
+  }
 }
 
 function goHome() {
@@ -615,4 +623,4 @@ function closeSider() {
 .menu-toggle {
   display: none;
 }
-</style> 
+</style>

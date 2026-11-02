@@ -39,19 +39,6 @@
       </div>
     </div>
     
-    <!-- 左侧广告条 -->
-    <div v-if="leftAds.length" class="ad-space-fixed left-ad-fixed">
-      <a v-for="ad in leftAds" :key="ad.id" :href="ad.url" target="_blank">
-        <img :src="ad.img" alt="广告" />
-      </a>
-    </div>
-    <!-- 右侧广告条 -->
-    <div v-if="rightAds.length" class="ad-space-fixed right-ad-fixed">
-      <a v-for="ad in rightAds" :key="ad.id" :href="ad.url" target="_blank">
-        <img :src="ad.img" alt="广告" />
-      </a>
-    </div>
-    
     <CardGrid :cards="filteredCards"/>
     
     <footer class="footer">
@@ -111,7 +98,7 @@
 
 <script setup>
 import { ref, onMounted, computed } from 'vue';
-import { getMenus, getCards, getAds, getFriends } from '../api';
+import { getMenus, getCards, getFriends } from '../api';
 import MenuBar from '../components/MenuBar.vue';
 import CardGrid from '../components/CardGrid.vue';
 
@@ -120,8 +107,6 @@ const activeMenu = ref(null);
 const activeSubMenu = ref(null);
 const cards = ref([]);
 const searchQuery = ref('');
-const leftAds = ref([]);
-const rightAds = ref([]);
 const showFriendLinks = ref(false);
 const friendLinks = ref([]);
 
@@ -183,11 +168,6 @@ onMounted(async () => {
     activeMenu.value = menus.value[0];
     loadCards();
   }
-  // 加载广告
-  const adRes = await getAds();
-  leftAds.value = adRes.data.filter(ad => ad.position === 'left');
-  rightAds.value = adRes.data.filter(ad => ad.position === 'right');
-  
   const friendRes = await getFriends();
   friendLinks.value = friendRes.data;
 });
@@ -398,48 +378,6 @@ function handleLogoError(event) {
   min-width: 0;
 }
 
-.ad-space {
-  width: 90px;
-  min-width: 60px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 24px;
-  padding: 0;
-  background: transparent;
-  margin: 0;
-}
-.ad-space a {
-  width: 100%;
-  display: block;
-}
-.ad-space img {
-  width: 100%;
-  max-width: 90px;
-  max-height: 160px;
-  border-radius: 12px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.12);
-  background: #fff;
-  object-fit: contain;
-  margin: 0 auto;
-}
-
-.ad-placeholder {
-  background: rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(10px);
-  border: 2px dashed rgba(255, 255, 255, 0.3);
-  border-radius: 12px;
-  color: rgba(255, 255, 255, 0.6);
-  padding: 2rem 1rem;
-  text-align: center;
-  font-size: 14px;
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .footer {
   margin-top: auto;
   text-align: center;
@@ -641,53 +579,12 @@ function handleLogoError(event) {
   z-index: 2;
 }
 
-.ad-space-fixed {
-  position: fixed;
-  top: 13rem;
-  z-index: 10;
-  width: 90px;
-  min-width: 60px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  padding: 0;
-  background: transparent;
-  margin: 0;
-}
-.left-ad-fixed {
-  left: 0;
-}
-.right-ad-fixed {
-  right: 0;
-}
-.ad-space-fixed a {
-  width: 100%;
-  display: block;
-}
-.ad-space-fixed img {
-  width: 100%;
-  max-width: 90px;
-  max-height: 160px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.12);
-  background: #fff;
-  margin: 0 auto;
-}
-
 @media (max-width: 1200px) {
   .content-wrapper {
     flex-direction: column;
     gap: 1rem;
   }
   
-  .ad-space {
-    width: 100%;
-    height: 100px;
-  }
-  
-  .ad-placeholder {
-    height: 80px;
-  }
 }
 
 @media (max-width: 768px) {
@@ -699,15 +596,6 @@ function handleLogoError(event) {
     gap: 0.5rem;
   }
   
-  .ad-space {
-    height: 60px;
-  }
-  
-  .ad-placeholder {
-    height: 50px;
-    font-size: 12px;
-    padding: 1rem 0.5rem;
-  }
   .footer {
     padding-top: 2rem;
   }
@@ -736,4 +624,4 @@ function handleLogoError(event) {
     gap: 20px;
   }
 }
-</style> 
+</style>
