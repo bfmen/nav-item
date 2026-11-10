@@ -212,7 +212,7 @@ test('接口代理图片并设置浏览器缓存；失败重定向到统一柴�
     const found = await fetch(base + '/api/favicon?url=success');
     assert.equal(found.status, 200);
     assert.equal(found.headers.get('content-type'), 'image/png');
-    assert.ok(found.headers.get('cache-control').includes('max-age=3600'));
+    assert.ok(found.headers.get('cache-control').includes('max-age=604800'));
     assert.deepEqual(Buffer.from(await found.arrayBuffer()), png);
     const fallback = await fetch(base + '/api/favicon?url=missing', { redirect: 'manual' });
     assert.equal(fallback.status, 302);

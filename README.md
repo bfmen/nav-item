@@ -32,7 +32,7 @@
 
 卡片图标优先使用后台填写的自定义图片（兼容 `logo`、`logo_url` 和本地上传），自定义图片失败直接回退到柴犬图。未填写时由后端 `/api/favicon?url=网站地址` 依次解析首页 `icon` / `apple-touch-icon` / `og:image` 声明、无 icon 声明时的 header/nav Logo、常见图标路径，以及经过 HTTP 状态和尺寸校验的 Google Favicon。浏览器不再直接请求 Google，404 图片及低分辨率 Google 占位图均被拦截。所有最终兜底统一使用 `/uploads/default-favicon.png`。
 
-成功图标缓存 12 小时，保存在 `database/favicon-cache/`；Docker 挂载 `/app/database` 可在重启后继续使用缓存。未找到结果在当前进程内缓存 10 分钟，浏览器成功图片缓存 1 小时，默认图缓存 5 分钟。探测跟随重定向、解析相对路径和 `<base>`，仅在图标请求内兼容自签名证书；单次外部请求最多 5 秒，每次探测总预算 20 秒。目标地址及每次重定向只允许访问公网 IP。没有声明图标或完全无法访问的站点会返回柴犬图，不会凭空生成 Logo。
+成功图标缓存最长 90 天，保存在 `database/favicon-cache/`；Docker 挂载 `/app/database` 可在重启后继续使用缓存。缓存超过 7 天后，首次请求立即返回旧图，同时后台静默重探测，完成后后续请求自动使用新 Logo，避免隔夜打开页面重新等待外部网站。浏览器成功图片缓存 7 天，并允许 stale-while-revalidate 30 天；未找到结果在当前进程内缓存 10 分钟，默认图缓存 5 分钟。需要立即更新某个网站 Logo 时，可请求 `/api/favicon?url=网站地址&refresh=1` 强制绕过缓存探测。探测跟随重定向、解析相对路径和 `<base>`，仅在图标请求内兼容自签名证书；单次外部请求最多 5 秒，每次探测总预算 20 秒。目标地址及每次重定向只允许访问公网 IP。没有声明图标或完全无法访问的站点会返回 `uploads/default-favicon.png` 柴犬图，不会凭空生成 Logo。
 
 ## 🏗️ 项目结构
 

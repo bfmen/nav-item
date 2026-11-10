@@ -14,15 +14,15 @@ const HTML_TIMEOUT_MS = 5000;
 const IMAGE_TIMEOUT_MS = 5000;
 const HTML_MAX_BYTES = 1024 * 1024;
 const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
-// 正常请求优先使用服务器缓存；超过 1 小时后台静默重探测，最长 6 小时强制刷新。
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
-const REVALIDATE_AFTER_MS = 60 * 60 * 1000;
+// 缓存保留 90 天保证长期秒开；超过 7 天才后台静默重探测一次，降低目标站和本机负载。
+const CACHE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const REVALIDATE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 const MISS_CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_REDIRECTS = 5;
 const CACHE_LIMIT = 500;
 const CACHE_MEMORY_BYTES = 32 * 1024 * 1024;
 const CACHE_DIRECTORY = path.join(__dirname, '..', 'database', 'favicon-cache');
-const CACHE_VERSION = 'v5';
+const CACHE_VERSION = 'v6';
 const PROBE_BUDGET_MS = 20000;
 const DNS_TIMEOUT_MS = 2000;
 const commonIconPaths = [
@@ -38,6 +38,7 @@ const imageTypes = new Set([
 ]);
 const memoryCache = new Map();
 const inFlight = new Map();
+const revalidating = new Set();
 
 function normalizeInput(value) {
   if (typeof value !== 'string' || value.length > 2048) return null;
@@ -573,10 +574,21 @@ async function readDiskCache(key) {
     const stat = await fs.stat(filename);
     if (stat.size > IMAGE_MAX_BYTES * 1.5) return null;
     const entry = JSON.parse(await fs.readFile(filename, 'utf8'));
-    if (entry.key !== key || !Number.isFinite(entry.expiresAt) || entry.expiresAt <= Date.now()) return null;
+    if (entry.key !== key) return null;
     const body = entry.body ? Buffer.from(entry.body, 'base64') : null;
     if (body && !isValidImage(body, entry.contentType)) return null;
-    return { body, contentType: entry.contentType, source: entry.source, fetchedAt: entry.fetchedAt || 0, expiresAt: entry.expiresAt };
+    if (!body) return null;
+    // 兼容旧缓存：没有 fetchedAt 时使用文件修改时间判断年龄。
+    const fetchedAt = Number.isFinite(entry.fetchedAt) ? entry.fetchedAt : stat.mtimeMs;
+    if (!Number.isFinite(fetchedAt) || Date.now() - fetchedAt > CACHE_TTL_MS) return null;
+    return {
+      body,
+      contentType: entry.contentType,
+      source: entry.source,
+      fetchedAt,
+      // 读取到旧但仍可用的磁盘缓存时重新给予完整服务端缓存窗口，避免隔夜阻塞首页。
+      expiresAt: Date.now() + CACHE_TTL_MS
+    };
   } catch { return null; }
 }
 
@@ -607,28 +619,32 @@ async function writeDiskCache(key, entry) {
   }
 }
 
+function triggerBackgroundRefresh(key, value) {
+  if (revalidating.has(key) || inFlight.has(key)) return;
+  revalidating.add(key);
+  findFavicon(value, { refresh: true })
+    .catch(() => {})
+    .finally(() => revalidating.delete(key));
+}
+
 async function findFavicon(value, { refresh = false } = {}) {
   const url = normalizeInput(value);
   if (!url) return null;
   const key = `${CACHE_VERSION}:${url.href}`;
   const cached = memoryCache.get(key);
   if (!refresh && cached && cached.expiresAt > Date.now()) {
-    if (cached.body && cached.fetchedAt && Date.now() - cached.fetchedAt >= REVALIDATE_AFTER_MS && !inFlight.has(key)) {
-      // 返回旧图保证首页速度，同时后台更新缓存；下一次请求即可拿到新 Logo。
-      findFavicon(value, { refresh: true }).catch(() => {});
-    }
+    if (cached.body && cached.fetchedAt && Date.now() - cached.fetchedAt >= REVALIDATE_AFTER_MS) triggerBackgroundRefresh(key, value);
     return cached;
   }
   if (inFlight.has(key)) return inFlight.get(key);
 
+  let needRevalidate = false;
   const pending = (async () => {
     const saved = !refresh ? await readDiskCache(key) : null;
     if (saved) {
       evictExpired();
       memoryCache.set(key, saved);
-      if (saved.body && saved.fetchedAt && Date.now() - saved.fetchedAt >= REVALIDATE_AFTER_MS && !inFlight.has(key)) {
-        findFavicon(value, { refresh: true }).catch(() => {});
-      }
+      if (saved.fetchedAt && Date.now() - saved.fetchedAt >= REVALIDATE_AFTER_MS) needRevalidate = true;
       return saved;
     }
     const result = await probe(url).catch(() => null);
@@ -645,6 +661,7 @@ async function findFavicon(value, { refresh = false } = {}) {
     return await pending;
   } finally {
     inFlight.delete(key);
+    if (needRevalidate) triggerBackgroundRefresh(key, value);
   }
 }
 
@@ -661,7 +678,9 @@ function createFaviconRouter(finder = findFavicon) {
       return res.redirect(302, DEFAULT_LOGO);
     }
     if (!entry) return res.redirect(302, DEFAULT_LOGO);
-    res.set('Cache-Control', entry.body ? 'public, max-age=3600' : 'public, max-age=300');
+    res.set('Cache-Control', entry.body
+      ? 'public, max-age=604800, stale-while-revalidate=2592000'
+      : 'public, max-age=300');
     res.set('X-Content-Type-Options', 'nosniff');
     if (!entry.body) {
       res.set('X-Favicon-Source', DEFAULT_LOGO);
