@@ -30,11 +30,18 @@ const run = (sql, params = []) => new Promise((resolve, reject) => {
 async function createBackup() {
   const tables = {};
   for (const table of TABLES) tables[table] = await all(`SELECT * FROM ${table}`);
+  const webdavConfig = await new Promise((resolve, reject) => {
+    db.get('SELECT url, username, password FROM webdav_config WHERE id = 1', (error, row) => {
+      if (error) reject(error);
+      else resolve(row || { url: '', username: '', password: '' });
+    });
+  });
   return {
     format: 'nav-item-backup',
     version: 1,
     createdAt: new Date().toISOString(),
-    tables
+    tables,
+    webdavConfig
   };
 }
 
@@ -54,6 +61,12 @@ async function restoreBackup(backup) {
     for (const row of backup.tables.cards) await run('INSERT INTO cards (id, menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [row.id, row.menu_id, row.sub_menu_id, row.title, row.url, row.logo_url, row.custom_logo_path, row.desc, row.order || 0]);
     for (const row of backup.tables.users) await run('INSERT INTO users (id, username, password, current_login_at, current_login_ip, last_login_at, last_login_ip) VALUES (?, ?, ?, ?, ?, ?, ?)', [row.id, row.username, row.password, row.current_login_at, row.current_login_ip, row.last_login_at, row.last_login_ip]);
     for (const row of backup.tables.friends) await run('INSERT INTO friends (id, title, url, logo) VALUES (?, ?, ?, ?)', [row.id, row.title, row.url, row.logo]);
+    if (backup.webdavConfig && typeof backup.webdavConfig === 'object') {
+      const { url = '', username = '', password = '' } = backup.webdavConfig;
+      await run(`INSERT INTO webdav_config (id, url, username, password, updated_at) VALUES (1, ?, ?, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET url=excluded.url, username=excluded.username, password=excluded.password, updated_at=excluded.updated_at`,
+      [String(url), String(username), String(password)]);
+    }
     await run('PRAGMA foreign_keys = ON');
     await run('COMMIT');
   } catch (error) {
