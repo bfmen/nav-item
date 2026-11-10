@@ -58,3 +58,5 @@ export const restoreBackup = (backup) => axios.post(`${BASE}/backup/restore`, ba
 export const backupToWebdav = (data) => axios.post(`${BASE}/backup/webdav`, data);
 export const listWebdavBackups = (data) => axios.post(`${BASE}/backup/webdav/list`, data);
 export const restoreWebdavBackup = (data) => axios.post(`${BASE}/backup/webdav/restore`, data);
+export const getWebdavConfig = () => axios.get(`${BASE}/backup/webdav/config`);
+export const saveWebdavConfig = (data) => axios.put(`${BASE}/backup/webdav/config`, data);

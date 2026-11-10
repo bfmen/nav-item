@@ -7,6 +7,15 @@ const db = require('../db');
 const router = express.Router();
 const TABLES = ['menus', 'sub_menus', 'cards', 'users', 'friends'];
 
+// 配置保存在服务端 SQLite 数据库，Docker 持久化 database 目录后即可跨刷新和重启保留。
+db.run(`CREATE TABLE IF NOT EXISTS webdav_config (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  url TEXT NOT NULL DEFAULT '',
+  username TEXT DEFAULT '',
+  password TEXT DEFAULT '',
+  updated_at TEXT
+)`);
+
 const all = (sql, params = []) => new Promise((resolve, reject) => {
   db.all(sql, params, (error, rows) => error ? reject(error) : resolve(rows));
 });
@@ -117,6 +126,24 @@ router.get('/export', authMiddleware, async (req, res) => {
   }
 });
 
+router.get('/webdav/config', authMiddleware, (req, res) => {
+  db.get('SELECT url, username, password FROM webdav_config WHERE id = 1', (error, row) => {
+    if (error) return res.status(500).json({ message: '读取 WebDAV 配置失败' });
+    res.json({ data: row || { url: '', username: '', password: '' } });
+  });
+});
+
+router.put('/webdav/config', authMiddleware, (req, res) => {
+  const { url = '', username = '', password = '' } = req.body || {};
+  if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ message: 'WebDAV 地址必须使用 HTTP 或 HTTPS' });
+  db.run(`INSERT INTO webdav_config (id, url, username, password, updated_at) VALUES (1, ?, ?, ?, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET url=excluded.url, username=excluded.username, password=excluded.password, updated_at=excluded.updated_at`,
+  [url.trim(), username.trim(), password], error => {
+    if (error) return res.status(500).json({ message: '保存 WebDAV 配置失败' });
+    res.json({ message: 'WebDAV 配置已保存到服务器' });
+  });
+});
+
 router.post('/restore', authMiddleware, async (req, res) => {
   try {
     await restoreBackup(req.body);
@@ -131,7 +158,11 @@ router.post('/webdav', authMiddleware, async (req, res) => {
     const { url, username, password } = req.body || {};
     if (!url) return res.status(400).json({ message: '请输入 WebDAV 地址' });
     const target = new URL(url);
-    if (target.pathname.endsWith('/')) target.pathname += `nav-item-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    // WebDAV 输入框表示目录：只有明确填写 .json 文件时才直接覆盖文件。
+    // 目录是否带末尾斜杠都统一在目录下创建新的备份文件，避免改写目录节点。
+    if (!/\.json$/i.test(target.pathname)) {
+      target.pathname = `${target.pathname.replace(/\/+$/, '')}/nav-item-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    }
     const backup = await createBackup();
     await putWebdav(target, JSON.stringify(backup, null, 2), username, password);
     res.json({ message: 'WebDAV 备份成功', url: target.toString() });

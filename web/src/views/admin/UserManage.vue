@@ -43,8 +43,8 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
-import { backupToWebdav, changePassword, exportBackup, listWebdavBackups, logout, restoreBackup, restoreWebdavBackup } from '../../api';
+import { onMounted, ref } from 'vue';
+import { backupToWebdav, changePassword, exportBackup, getWebdavConfig, listWebdavBackups, logout, restoreBackup, restoreWebdavBackup, saveWebdavConfig } from '../../api';
 
 const oldPassword = ref('');
 const newPassword = ref('');
@@ -56,6 +56,14 @@ const webdavListLoading = ref(false);
 const webdavRestoreLoading = ref(false);
 const webdavFiles = ref([]);
 const selectedWebdavUrl = ref('');
+
+onMounted(async () => {
+  try {
+    const { data } = await getWebdavConfig();
+    webdav.value = { url: data.data?.url || '', username: data.data?.username || '', password: data.data?.password || '' };
+    if (webdav.value.url) await loadWebdavBackups();
+  } catch (error) { notify(error.response?.data?.message || '读取 WebDAV 配置失败', 'error'); }
+});
 const message = ref('');
 const messageType = ref('success');
 const webdav = ref({ url: '', username: '', password: '' });
@@ -113,6 +121,7 @@ async function backupWebdav() {
   if (!webdav.value.url) return notify('请输入 WebDAV 地址', 'error');
   webdavLoading.value = true;
   try {
+    await saveWebdavConfig(webdav.value);
     const { data } = await backupToWebdav(webdav.value);
     notify(data.message || 'WebDAV 备份成功');
   } catch (error) { notify(error.response?.data?.message || 'WebDAV 备份失败', 'error'); }
@@ -123,6 +132,7 @@ async function loadWebdavBackups() {
   if (!webdav.value.url) return notify('请输入 WebDAV 地址', 'error');
   webdavListLoading.value = true;
   try {
+    await saveWebdavConfig(webdav.value);
     const { data } = await listWebdavBackups(webdav.value);
     webdavFiles.value = data.data || [];
     selectedWebdavUrl.value = webdavFiles.value[0]?.url || '';
@@ -136,6 +146,7 @@ async function restoreFromWebdav() {
   if (!window.confirm('还原后将覆盖当前栏目、卡片、友链和账户数据，确定继续吗？')) return;
   webdavRestoreLoading.value = true;
   try {
+    await saveWebdavConfig(webdav.value);
     await restoreWebdavBackup({ ...webdav.value, fileUrl: selectedWebdavUrl.value });
     notify('云端备份还原成功，请刷新页面');
   } catch (error) { notify(error.response?.data?.message || '云端备份还原失败', 'error'); }
