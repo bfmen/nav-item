@@ -54,29 +54,59 @@ async function restoreBackup(backup) {
   }
 }
 
-function putWebdav(target, body, username, password) {
+function requestWebdav(target, method, username, password, body = '', extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(target);
     if (!['http:', 'https:'].includes(url.protocol)) return reject(new Error('WebDAV 地址必须使用 HTTP 或 HTTPS'));
     const transport = url.protocol === 'https:' ? https : http;
     const request = transport.request(url, {
-      method: 'PUT',
+      method,
       headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Content-Length': Buffer.byteLength(body),
+        ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
         ...(username ? { Authorization: `Basic ${Buffer.from(`${username}:${password || ''}`).toString('base64')}` } : {})
+        , ...extraHeaders
       },
       timeout: 10000
     }, response => {
-      response.resume();
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
       response.on('end', () => response.statusCode >= 200 && response.statusCode < 300
-        ? resolve(response.statusCode)
+        ? resolve({ statusCode: response.statusCode, headers: response.headers, body: Buffer.concat(chunks) })
         : reject(new Error(`WebDAV 返回 HTTP ${response.statusCode}`)));
     });
     request.on('timeout', () => request.destroy(new Error('WebDAV 请求超时')));
     request.on('error', reject);
     request.end(body);
   });
+}
+
+function putWebdav(target, body, username, password) {
+  return requestWebdav(target, 'PUT', username, password, body, { 'Content-Type': 'application/json; charset=utf-8' });
+}
+
+function decodeXml(value) {
+  return value.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+}
+
+async function listWebdav(target, username, password) {
+  const base = new URL(target);
+  if (!base.pathname.endsWith('/')) base.pathname += '/';
+  const response = await requestWebdav(base, 'PROPFIND', username, password, '', { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' });
+  const xml = response.body.toString('utf8');
+  const items = [...xml.matchAll(/<[^:>]*:?response[^>]*>([\s\S]*?)<\/[^:>]*:?response>/gi)].map(match => {
+    const block = match[1];
+    const href = block.match(/<[^:>]*:?href[^>]*>([\s\S]*?)<\/[^:>]*:?href>/i)?.[1];
+    const modified = block.match(/<[^:>]*:?getlastmodified[^>]*>([\s\S]*?)<\/[^:>]*:?getlastmodified>/i)?.[1];
+    const size = block.match(/<[^:>]*:?getcontentlength[^>]*>([\s\S]*?)<\/[^:>]*:?getcontentlength>/i)?.[1];
+    if (!href) return null;
+    const fileUrl = new URL(decodeXml(href), base).toString();
+    const pathname = new URL(fileUrl).pathname;
+    if (pathname.endsWith('/') || !/\.json$/i.test(pathname)) return null;
+    return { name: decodeURIComponent(pathname.split('/').pop()), url: fileUrl, modified: modified ? decodeXml(modified).trim() : '', size: Number(size) || 0 };
+  }).filter(Boolean);
+  const unique = [...new Map(items.map(item => [item.url, item])).values()];
+  unique.sort((a, b) => (Date.parse(b.modified) || 0) - (Date.parse(a.modified) || 0) || b.name.localeCompare(a.name));
+  return unique;
 }
 
 router.get('/export', authMiddleware, async (req, res) => {
@@ -107,6 +137,29 @@ router.post('/webdav', authMiddleware, async (req, res) => {
     res.json({ message: 'WebDAV 备份成功', url: target.toString() });
   } catch (error) {
     res.status(400).json({ message: `WebDAV 备份失败：${error.message}` });
+  }
+});
+
+router.post('/webdav/list', authMiddleware, async (req, res) => {
+  try {
+    const { url, username, password } = req.body || {};
+    if (!url) return res.status(400).json({ message: '请输入 WebDAV 地址' });
+    res.json({ data: await listWebdav(url, username, password) });
+  } catch (error) {
+    res.status(400).json({ message: `读取 WebDAV 备份列表失败：${error.message}` });
+  }
+});
+
+router.post('/webdav/restore', authMiddleware, async (req, res) => {
+  try {
+    const { fileUrl, url, username, password } = req.body || {};
+    if (!fileUrl && !url) return res.status(400).json({ message: '请选择云端备份文件' });
+    const response = await requestWebdav(fileUrl || url, 'GET', username, password);
+    const backup = JSON.parse(response.body.toString('utf8'));
+    await restoreBackup(backup);
+    res.json({ message: '云端备份还原成功，请刷新页面' });
+  } catch (error) {
+    res.status(400).json({ message: `云端备份还原失败：${error.message}` });
   }
 });
 

@@ -29,8 +29,12 @@
           <div class="subheading"><span>WebDAV 远程备份</span><small>支持坚果云、Nextcloud 等 WebDAV 服务</small></div>
           <input v-model="webdav.url" type="url" placeholder="https://dav.example.com/backups/" />
           <div class="two-fields"><input v-model="webdav.username" type="text" placeholder="用户名（可选）" autocomplete="username" /><input v-model="webdav.password" type="password" placeholder="密码（可选）" autocomplete="current-password" /></div>
-          <button class="primary-button" type="button" :disabled="webdavLoading" @click="backupWebdav">{{ webdavLoading ? '上传中…' : '备份到 WebDAV' }}</button>
-          <p class="hint">地址以 / 结尾时会自动生成带时间的备份文件名。</p>
+          <div class="webdav-buttons"><button class="secondary-button" type="button" :disabled="webdavListLoading" @click="loadWebdavBackups">{{ webdavListLoading ? '读取中…' : '读取云端备份列表' }}</button><button class="primary-button" type="button" :disabled="webdavLoading" @click="backupWebdav">{{ webdavLoading ? '上传中…' : '备份到 WebDAV' }}</button></div>
+          <div v-if="webdavFiles.length" class="cloud-list">
+            <label>选择云端备份（默认最新）<select v-model="selectedWebdavUrl"><option v-for="file in webdavFiles" :key="file.url" :value="file.url">{{ file.name }}{{ file.modified ? ` · ${formatDate(file.modified)}` : '' }}</option></select></label>
+            <button class="restore-button" type="button" :disabled="webdavRestoreLoading" @click="restoreFromWebdav">{{ webdavRestoreLoading ? '还原中…' : '还原选中的云端备份' }}</button>
+          </div>
+          <p v-else class="hint">输入 WebDAV 地址和账户后点击“读取云端备份列表”。地址以 / 结尾时，上传会自动生成带时间的备份文件名。</p>
         </div>
       </article>
     </div>
@@ -40,7 +44,7 @@
 
 <script setup>
 import { ref } from 'vue';
-import { backupToWebdav, changePassword, exportBackup, logout, restoreBackup } from '../../api';
+import { backupToWebdav, changePassword, exportBackup, listWebdavBackups, logout, restoreBackup, restoreWebdavBackup } from '../../api';
 
 const oldPassword = ref('');
 const newPassword = ref('');
@@ -48,6 +52,10 @@ const confirmPassword = ref('');
 const passwordLoading = ref(false);
 const backupLoading = ref(false);
 const webdavLoading = ref(false);
+const webdavListLoading = ref(false);
+const webdavRestoreLoading = ref(false);
+const webdavFiles = ref([]);
+const selectedWebdavUrl = ref('');
 const message = ref('');
 const messageType = ref('success');
 const webdav = ref({ url: '', username: '', password: '' });
@@ -110,6 +118,34 @@ async function backupWebdav() {
   } catch (error) { notify(error.response?.data?.message || 'WebDAV 备份失败', 'error'); }
   finally { webdavLoading.value = false; }
 }
+
+async function loadWebdavBackups() {
+  if (!webdav.value.url) return notify('请输入 WebDAV 地址', 'error');
+  webdavListLoading.value = true;
+  try {
+    const { data } = await listWebdavBackups(webdav.value);
+    webdavFiles.value = data.data || [];
+    selectedWebdavUrl.value = webdavFiles.value[0]?.url || '';
+    notify(webdavFiles.value.length ? `已找到 ${webdavFiles.value.length} 个云端备份，默认选择最新备份` : '云端暂时没有 Nav-Item JSON 备份', webdavFiles.value.length ? 'success' : 'error');
+  } catch (error) { webdavFiles.value = []; selectedWebdavUrl.value = ''; notify(error.response?.data?.message || '读取云端备份失败', 'error'); }
+  finally { webdavListLoading.value = false; }
+}
+
+async function restoreFromWebdav() {
+  if (!selectedWebdavUrl.value) return notify('请先读取并选择云端备份', 'error');
+  if (!window.confirm('还原后将覆盖当前栏目、卡片、友链和账户数据，确定继续吗？')) return;
+  webdavRestoreLoading.value = true;
+  try {
+    await restoreWebdavBackup({ ...webdav.value, fileUrl: selectedWebdavUrl.value });
+    notify('云端备份还原成功，请刷新页面');
+  } catch (error) { notify(error.response?.data?.message || '云端备份还原失败', 'error'); }
+  finally { webdavRestoreLoading.value = false; }
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
 </script>
 
 <style scoped>
@@ -140,10 +176,14 @@ button:disabled { opacity: .55; cursor: not-allowed; }
 .webdav-box { padding-top: 20px; border-top: 1px solid #edf0f6; }
 .subheading { display: grid; gap: 4px; font-weight: 700; color: #33425d; }
 .two-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.webdav-buttons { display: flex; flex-wrap: wrap; gap: 10px; }
+.cloud-list { display: grid; gap: 12px; padding: 14px; border: 1px solid #e7ecf5; border-radius: 12px; background: #fafbff; }
+select { width: 100%; box-sizing: border-box; border: 1px solid #dce3ef; border-radius: 10px; padding: 11px 12px; color: #172033; background: #fff; font-size: 14px; }
+.restore-button { color: #9b5b13; background: #fff3df; }
 .hint { line-height: 1.5; }
 .notice { max-width: 700px; margin: 18px auto 0; padding: 11px 14px; border-radius: 10px; text-align: center; font-size: 14px; }
 .notice.success { color: #176b4c; background: #e8f8f0; }
 .notice.error { color: #a33b49; background: #fff0f1; }
 @media (max-width: 820px) { .settings-grid { grid-template-columns: 1fr; } .settings-page { padding-top: 0; } }
-@media (max-width: 480px) { .settings-card { padding: 18px; } .two-fields { grid-template-columns: 1fr; } .backup-actions button, .backup-actions .file-button { width: 100%; justify-content: center; } }
+@media (max-width: 480px) { .settings-card { padding: 18px; } .two-fields { grid-template-columns: 1fr; } .backup-actions button, .backup-actions .file-button, .webdav-buttons button { width: 100%; justify-content: center; } }
 </style>

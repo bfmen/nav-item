@@ -56,3 +56,5 @@ export const getUsers = () => axios.get(`${BASE}/users`);
 export const exportBackup = () => axios.get(`${BASE}/backup/export`);
 export const restoreBackup = (backup) => axios.post(`${BASE}/backup/restore`, backup);
 export const backupToWebdav = (data) => axios.post(`${BASE}/backup/webdav`, data);
+export const listWebdavBackups = (data) => axios.post(`${BASE}/backup/webdav/list`, data);
+export const restoreWebdavBackup = (data) => axios.post(`${BASE}/backup/webdav/restore`, data);
