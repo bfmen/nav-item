@@ -14,7 +14,9 @@ const HTML_TIMEOUT_MS = 5000;
 const IMAGE_TIMEOUT_MS = 5000;
 const HTML_MAX_BYTES = 1024 * 1024;
 const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
-const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+// 正常请求优先使用服务器缓存；超过 1 小时后台静默重探测，最长 6 小时强制刷新。
+const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const REVALIDATE_AFTER_MS = 60 * 60 * 1000;
 const MISS_CACHE_TTL_MS = 10 * 60 * 1000;
 const MAX_REDIRECTS = 5;
 const CACHE_LIMIT = 500;
@@ -574,7 +576,7 @@ async function readDiskCache(key) {
     if (entry.key !== key || !Number.isFinite(entry.expiresAt) || entry.expiresAt <= Date.now()) return null;
     const body = entry.body ? Buffer.from(entry.body, 'base64') : null;
     if (body && !isValidImage(body, entry.contentType)) return null;
-    return { body, contentType: entry.contentType, source: entry.source, expiresAt: entry.expiresAt };
+    return { body, contentType: entry.contentType, source: entry.source, fetchedAt: entry.fetchedAt || 0, expiresAt: entry.expiresAt };
   } catch { return null; }
 }
 
@@ -605,26 +607,35 @@ async function writeDiskCache(key, entry) {
   }
 }
 
-async function findFavicon(value) {
+async function findFavicon(value, { refresh = false } = {}) {
   const url = normalizeInput(value);
   if (!url) return null;
   const key = `${CACHE_VERSION}:${url.href}`;
   const cached = memoryCache.get(key);
-  if (cached && cached.expiresAt > Date.now()) return cached;
+  if (!refresh && cached && cached.expiresAt > Date.now()) {
+    if (cached.body && cached.fetchedAt && Date.now() - cached.fetchedAt >= REVALIDATE_AFTER_MS && !inFlight.has(key)) {
+      // 返回旧图保证首页速度，同时后台更新缓存；下一次请求即可拿到新 Logo。
+      findFavicon(value, { refresh: true }).catch(() => {});
+    }
+    return cached;
+  }
   if (inFlight.has(key)) return inFlight.get(key);
 
   const pending = (async () => {
-    const saved = await readDiskCache(key);
+    const saved = !refresh ? await readDiskCache(key) : null;
     if (saved) {
       evictExpired();
       memoryCache.set(key, saved);
+      if (saved.body && saved.fetchedAt && Date.now() - saved.fetchedAt >= REVALIDATE_AFTER_MS && !inFlight.has(key)) {
+        findFavicon(value, { refresh: true }).catch(() => {});
+      }
       return saved;
     }
     const result = await probe(url).catch(() => null);
     const entry = result || { body: null, contentType: null, source: DEFAULT_LOGO };
     evictExpired();
     const ttl = entry.body ? CACHE_TTL_MS : MISS_CACHE_TTL_MS;
-    const cachedEntry = { ...entry, expiresAt: Date.now() + ttl };
+    const cachedEntry = { ...entry, fetchedAt: Date.now(), expiresAt: Date.now() + ttl };
     memoryCache.set(key, cachedEntry);
     if (cachedEntry.body) await writeDiskCache(key, cachedEntry);
     return cachedEntry;
@@ -645,7 +656,7 @@ function createFaviconRouter(finder = findFavicon) {
       return res.status(400).json({ error: '请提供有效的 http 或 https 网站地址' });
     }
     let entry;
-    try { entry = await finder(req.query.url); } catch {
+    try { entry = await finder(req.query.url, { refresh: req.query.refresh === '1' || req.query.refresh === 'true' }); } catch {
       res.set('Cache-Control', 'no-store');
       return res.redirect(302, DEFAULT_LOGO);
     }

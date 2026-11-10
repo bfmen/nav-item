@@ -6,6 +6,7 @@ const db = require('../db');
 
 const router = express.Router();
 const TABLES = ['menus', 'sub_menus', 'cards', 'users', 'friends'];
+const MAX_WEBDAV_BACKUPS = 8;
 
 // 配置保存在服务端 SQLite 数据库，Docker 持久化 database 目录后即可跨刷新和重启保留。
 db.run(`CREATE TABLE IF NOT EXISTS webdav_config (
@@ -131,6 +132,21 @@ async function listWebdav(target, username, password) {
   return unique;
 }
 
+async function pruneWebdavBackups(target, username, password) {
+  const files = await listWebdav(target, username, password);
+  const stale = files.slice(MAX_WEBDAV_BACKUPS);
+  let removed = 0;
+  for (const file of stale) {
+    try {
+      await requestWebdav(file.url, 'DELETE', username, password);
+      removed++;
+    } catch {
+      // 上传已经成功时，单个旧文件删除失败不应让用户误以为备份失败。
+    }
+  }
+  return { kept: Math.min(files.length, MAX_WEBDAV_BACKUPS), removed };
+}
+
 router.get('/export', authMiddleware, async (req, res) => {
   try {
     res.json(await createBackup());
@@ -178,7 +194,8 @@ router.post('/webdav', authMiddleware, async (req, res) => {
     }
     const backup = await createBackup();
     await putWebdav(target, JSON.stringify(backup, null, 2), username, password);
-    res.json({ message: 'WebDAV 备份成功', url: target.toString() });
+    const cleanup = await pruneWebdavBackups(url, username, password);
+    res.json({ message: `WebDAV 备份成功，已保留最新 ${cleanup.kept} 个备份`, url: target.toString() });
   } catch (error) {
     res.status(400).json({ message: `WebDAV 备份失败：${error.message}` });
   }
