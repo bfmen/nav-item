@@ -9,13 +9,14 @@ const authRoutes = require('./routes/auth');
 const friendRoutes = require('./routes/friend');
 const userRoutes = require('./routes/user');
 const faviconRoutes = require('./routes/favicon').createFaviconRouter();
+const backupRoutes = require('./routes/backup');
 const compression = require('compression');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(compression());
 // Docker uploads 为空挂载时仍通过同一路径提供随前端构建携带的原始柴犬图。
 app.get('/uploads/default-favicon.png', (req, res) => {
@@ -51,6 +52,7 @@ app.use('/api/favicon', faviconRoutes);
 app.use('/api', authRoutes);
 app.use('/api/friends', friendRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/backup', backupRoutes);
 
 const db = require('./db');
 if (require.main === module) {

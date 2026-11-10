@@ -53,3 +53,6 @@ export const deleteFriend = (id) => axios.delete(`${BASE}/friends/${id}`);
 export const getUserProfile = () => axios.get(`${BASE}/users/profile`);
 export const changePassword = (oldPassword, newPassword) => axios.put(`${BASE}/users/password`, { oldPassword, newPassword });
 export const getUsers = () => axios.get(`${BASE}/users`);
+export const exportBackup = () => axios.get(`${BASE}/backup/export`);
+export const restoreBackup = (backup) => axios.post(`${BASE}/backup/restore`, backup);
+export const backupToWebdav = (data) => axios.post(`${BASE}/backup/webdav`, data);
