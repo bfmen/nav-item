@@ -37,12 +37,19 @@ async function createBackup() {
       else resolve(row || { url: '', username: '', password: '' });
     });
   });
+  let aiConfigs = [];
+  try {
+    aiConfigs = await all('SELECT id, name, base_url, api_key, model, is_active FROM ai_configs ORDER BY id ASC');
+  } catch {
+    aiConfigs = [];
+  }
   return {
     format: 'nav-item-backup',
     version: 1,
     createdAt: new Date().toISOString(),
     tables,
-    webdavConfig
+    webdavConfig,
+    aiConfigs
   };
 }
 
@@ -67,6 +74,16 @@ async function restoreBackup(backup) {
       await run(`INSERT INTO webdav_config (id, url, username, password, updated_at) VALUES (1, ?, ?, ?, datetime('now'))
         ON CONFLICT(id) DO UPDATE SET url=excluded.url, username=excluded.username, password=excluded.password, updated_at=excluded.updated_at`,
       [String(url), String(username), String(password)]);
+    }
+    if (Array.isArray(backup.aiConfigs)) {
+      await run('DELETE FROM ai_configs');
+      for (const cfg of backup.aiConfigs) {
+        if (!cfg || !cfg.name || !cfg.base_url) continue;
+        await run(
+          `INSERT INTO ai_configs (name, base_url, api_key, model, is_active, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+          [String(cfg.name), String(cfg.base_url), String(cfg.api_key || ''), String(cfg.model || ''), cfg.is_active ? 1 : 0]
+        );
+      }
     }
     await run('PRAGMA foreign_keys = ON');
     await run('COMMIT');

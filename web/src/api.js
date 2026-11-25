@@ -21,27 +21,43 @@ export const getMenus = () => axios.get(`${BASE}/menus`);
 export const addMenu = (data) => axios.post(`${BASE}/menus`, data);
 export const updateMenu = (id, data) => axios.put(`${BASE}/menus/${id}`, data);
 export const deleteMenu = (id) => axios.delete(`${BASE}/menus/${id}`);
+export const reorderMenus = (items) => axios.put(`${BASE}/menus/reorder`, { items });
 
 // 子菜单相关API
 export const getSubMenus = (menuId) => axios.get(`${BASE}/menus/${menuId}/submenus`);
 export const addSubMenu = (menuId, data) => axios.post(`${BASE}/menus/${menuId}/submenus`, data);
 export const updateSubMenu = (id, data) => axios.put(`${BASE}/menus/submenus/${id}`, data);
 export const deleteSubMenu = (id) => axios.delete(`${BASE}/menus/submenus/${id}`);
+export const reorderSubMenus = (items) => axios.put(`${BASE}/menus/submenus/reorder`, { items });
 
 // 卡片相关API
 export const getCards = (menuId, subMenuId = null) => {
   const params = subMenuId ? { subMenuId } : {};
   return axios.get(`${BASE}/cards/${menuId}`, { params });
 };
+export const getFilteredCards = (params = {}) => axios.get(`${BASE}/cards`, { params });
 export const addCard = (data) => axios.post(`${BASE}/cards`, data);
 export const updateCard = (id, data) => axios.put(`${BASE}/cards/${id}`, data);
 export const deleteCard = (id) => axios.delete(`${BASE}/cards/${id}`);
+export const reorderCards = (items) => axios.put(`${BASE}/cards/reorder`, { items });
+export const batchDeleteCards = (ids) => axios.post(`${BASE}/cards/batch-delete`, { ids });
+export const batchMoveCards = (data) => axios.post(`${BASE}/cards/batch-move`, data);
 
 export const uploadLogo = (file) => {
   const formData = new FormData();
   formData.append('logo', file);
   return axios.post(`${BASE}/upload`, formData);
 };
+
+// AI 智能整理与配置API
+export const getAiConfigs = () => axios.get(`${BASE}/ai/configs`);
+export const addAiConfig = (data) => axios.post(`${BASE}/ai/configs`, data);
+export const updateAiConfig = (id, data) => axios.put(`${BASE}/ai/configs/${id}`, data);
+export const activateAiConfig = (id) => axios.put(`${BASE}/ai/configs/${id}/activate`);
+export const deleteAiConfig = (id) => axios.delete(`${BASE}/ai/configs/${id}`);
+export const fetchAiModels = (data) => axios.post(`${BASE}/ai/models`, data);
+export const runAiOrganize = (data) => axios.post(`${BASE}/ai/organize`, data);
+export const applyAiOrganize = (changes) => axios.post(`${BASE}/ai/apply`, { changes });
 
 // 友链API
 export const getFriends = () => axios.get(`${BASE}/friends`);

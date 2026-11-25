@@ -63,6 +63,16 @@ db.serialize(() => {
     logo TEXT
   )`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_friends_title ON friends(title)`);
+  db.run(`CREATE TABLE IF NOT EXISTS ai_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    api_key TEXT NOT NULL,
+    model TEXT DEFAULT '',
+    is_active INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`);
 
   // 检查菜单表是否为空，若为空则插入默认菜单
   db.get('SELECT COUNT(*) as count FROM menus', (err, row) => {
