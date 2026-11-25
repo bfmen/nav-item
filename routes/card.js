@@ -3,6 +3,7 @@ const db = require('../db');
 const auth = require('./authMiddleware');
 const router = express.Router();
 const DEFAULT_LOGO = '/uploads/default-favicon.png';
+const RECYCLE_REASONS = new Set(['dead_link', 'domain_expired', 'duplicate', 'manual']);
 
 const all = (sql, params = []) => new Promise((resolve, reject) => {
   db.all(sql, params, (err, rows) => (err ? reject(err) : resolve(rows)));
@@ -18,6 +19,10 @@ const run = (sql, params = []) => new Promise((resolve, reject) => {
     else resolve(this);
   });
 });
+
+function normalizeRecycleReason(reason) {
+  return RECYCLE_REASONS.has(reason) ? reason : 'manual';
+}
 
 function getLogoProxyUrl(card) {
   const custom = (card.logo || card.logo_url || '').trim();
@@ -40,42 +45,196 @@ function attachDisplayLogo(rows) {
   return rows;
 }
 
-// 获取卡片列表（支持全部、按主菜单、按主菜单直属、按子菜单筛选）
+const BASE_CARD_SELECT = `
+  SELECT
+    c.*,
+    COALESCE(c.menu_id, sm.parent_id) AS effective_menu_id,
+    m.name AS menu_name,
+    sm.name AS sub_menu_name
+  FROM cards c
+  LEFT JOIN sub_menus sm ON c.sub_menu_id = sm.id
+  LEFT JOIN menus m ON COALESCE(c.menu_id, sm.parent_id) = m.id
+`;
+
+// 获取正常卡片列表（支持全部、按主菜单、按主菜单直属、按子菜单筛选，自动过滤已软删除卡片）
 router.get('/', async (req, res) => {
   try {
     const { menuId, subMenuId } = req.query;
-    const baseSelect = `
-      SELECT
-        c.*,
-        COALESCE(c.menu_id, sm.parent_id) AS effective_menu_id,
-        m.name AS menu_name,
-        sm.name AS sub_menu_name
-      FROM cards c
-      LEFT JOIN sub_menus sm ON c.sub_menu_id = sm.id
-      LEFT JOIN menus m ON COALESCE(c.menu_id, sm.parent_id) = m.id
-    `;
-
     let query = '';
     let params = [];
 
     if (subMenuId && subMenuId !== 'all' && subMenuId !== 'main') {
-      query = `${baseSelect} WHERE c.sub_menu_id = ? ORDER BY c."order" ASC, c.id ASC`;
+      query = `${BASE_CARD_SELECT} WHERE COALESCE(c.is_deleted, 0) = 0 AND c.sub_menu_id = ? ORDER BY c."order" ASC, c.id ASC`;
       params = [Number(subMenuId)];
     } else if (menuId && menuId !== 'all') {
       if (subMenuId === 'main') {
-        query = `${baseSelect} WHERE c.menu_id = ? AND c.sub_menu_id IS NULL ORDER BY c."order" ASC, c.id ASC`;
+        query = `${BASE_CARD_SELECT} WHERE COALESCE(c.is_deleted, 0) = 0 AND c.menu_id = ? AND c.sub_menu_id IS NULL ORDER BY c."order" ASC, c.id ASC`;
         params = [Number(menuId)];
       } else {
-        query = `${baseSelect} WHERE COALESCE(c.menu_id, sm.parent_id) = ? ORDER BY COALESCE(sm."order", -1) ASC, c."order" ASC, c.id ASC`;
+        query = `${BASE_CARD_SELECT} WHERE COALESCE(c.is_deleted, 0) = 0 AND COALESCE(c.menu_id, sm.parent_id) = ? ORDER BY COALESCE(sm."order", -1) ASC, c."order" ASC, c.id ASC`;
         params = [Number(menuId)];
       }
     } else {
-      query = `${baseSelect} ORDER BY COALESCE(m."order", 999999) ASC, COALESCE(sm."order", -1) ASC, c."order" ASC, c.id ASC`;
+      query = `${BASE_CARD_SELECT} WHERE COALESCE(c.is_deleted, 0) = 0 ORDER BY COALESCE(m."order", 999999) ASC, COALESCE(sm."order", -1) ASC, c."order" ASC, c.id ASC`;
     }
 
     const rows = await all(query, params);
     res.json(attachDisplayLogo(rows));
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 获取回收站数量（供侧边栏角标展示，必须在 /:menuId 之前注册）
+router.get('/recycle/count', auth, async (req, res) => {
+  try {
+    const row = await get('SELECT COUNT(*) AS count FROM cards WHERE COALESCE(is_deleted, 0) = 1');
+    res.json({ count: Number(row?.count || 0) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 获取回收站列表（支持按失效原因 + 原主菜单/子菜单双维度筛选）
+router.get('/recycle', auth, async (req, res) => {
+  try {
+    const { reason, menuId, subMenuId } = req.query;
+    const conditions = ['COALESCE(c.is_deleted, 0) = 1'];
+    const params = [];
+
+    if (reason && reason !== 'all' && RECYCLE_REASONS.has(reason)) {
+      conditions.push("COALESCE(c.recycle_reason, 'manual') = ?");
+      params.push(reason);
+    }
+
+    if (subMenuId && subMenuId !== 'all' && subMenuId !== 'main') {
+      conditions.push('c.sub_menu_id = ?');
+      params.push(Number(subMenuId));
+    } else if (menuId && menuId !== 'all') {
+      if (subMenuId === 'main') {
+        conditions.push('c.menu_id = ? AND c.sub_menu_id IS NULL');
+        params.push(Number(menuId));
+      } else {
+        conditions.push('COALESCE(c.menu_id, sm.parent_id) = ?');
+        params.push(Number(menuId));
+      }
+    }
+
+    const rows = await all(
+      `${BASE_CARD_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY c.deleted_at DESC, c.id DESC`,
+      params
+    );
+
+    const countRows = await all(`
+      SELECT COALESCE(recycle_reason, 'manual') AS reason, COUNT(*) AS cnt
+      FROM cards
+      WHERE COALESCE(is_deleted, 0) = 1
+      GROUP BY COALESCE(recycle_reason, 'manual')
+    `);
+
+    const counts = { total: 0, dead_link: 0, domain_expired: 0, duplicate: 0, manual: 0 };
+    countRows.forEach(r => {
+      const cnt = Number(r.cnt || 0);
+      counts.total += cnt;
+      if (Object.prototype.hasOwnProperty.call(counts, r.reason)) {
+        counts[r.reason] = cnt;
+      } else {
+        counts.manual += cnt;
+      }
+    });
+
+    res.json({ data: attachDisplayLogo(rows), counts });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 从回收站还原卡片（恢复至原栏目；若原栏目已不存在则兜底恢复至首个主菜单）
+router.post('/recycle/restore', auth, async (req, res) => {
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : [])
+    .map(Number)
+    .filter(id => Number.isInteger(id) && id > 0);
+  if (!ids.length) return res.status(400).json({ error: '请选择要还原的卡片' });
+
+  try {
+    const menus = await all('SELECT id FROM menus ORDER BY "order" ASC, id ASC');
+    const subMenus = await all('SELECT id, parent_id FROM sub_menus');
+    const menuIdSet = new Set(menus.map(m => Number(m.id)));
+    const subMenuById = new Map(subMenus.map(sm => [Number(sm.id), Number(sm.parent_id)]));
+    const fallbackMenuId = menus[0]?.id ?? null;
+
+    await run('BEGIN TRANSACTION');
+    let restored = 0;
+    for (const id of ids) {
+      const card = await get('SELECT id, menu_id, sub_menu_id FROM cards WHERE id = ? AND COALESCE(is_deleted, 0) = 1', [id]);
+      if (!card) continue;
+
+      let targetSubMenuId = card.sub_menu_id ? Number(card.sub_menu_id) : null;
+      let targetMenuId = card.menu_id ? Number(card.menu_id) : null;
+
+      if (targetSubMenuId && subMenuById.has(targetSubMenuId)) {
+        targetMenuId = subMenuById.get(targetSubMenuId);
+      } else {
+        targetSubMenuId = null;
+        if (!targetMenuId || !menuIdSet.has(targetMenuId)) {
+          targetMenuId = fallbackMenuId;
+        }
+      }
+
+      const result = await run(
+        'UPDATE cards SET is_deleted = 0, deleted_at = NULL, recycle_reason = NULL, menu_id = ?, sub_menu_id = ? WHERE id = ?',
+        [targetMenuId, targetSubMenuId, id]
+      );
+      restored += result.changes;
+    }
+    await run('COMMIT');
+    res.json({ restored });
+  } catch (err) {
+    await run('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 从回收站彻底物理删除
+router.post('/recycle/permanent-delete', auth, async (req, res) => {
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : [])
+    .map(Number)
+    .filter(id => Number.isInteger(id) && id > 0);
+  if (!ids.length) return res.status(400).json({ error: '请选择要彻底删除的卡片' });
+
+  try {
+    await run('BEGIN TRANSACTION');
+    const placeholders = ids.map(() => '?').join(',');
+    const result = await run(
+      `DELETE FROM cards WHERE COALESCE(is_deleted, 0) = 1 AND id IN (${placeholders})`,
+      ids
+    );
+    await run('COMMIT');
+    res.json({ deleted: result.changes });
+  } catch (err) {
+    await run('ROLLBACK').catch(() => {});
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 一键清空回收站（支持清空全部或按当前筛选原因清空）
+router.delete('/recycle/empty', auth, async (req, res) => {
+  try {
+    const { reason } = req.query;
+    await run('BEGIN TRANSACTION');
+    let result;
+    if (reason && reason !== 'all' && RECYCLE_REASONS.has(reason)) {
+      result = await run(
+        "DELETE FROM cards WHERE COALESCE(is_deleted, 0) = 1 AND COALESCE(recycle_reason, 'manual') = ?",
+        [reason]
+      );
+    } else {
+      result = await run('DELETE FROM cards WHERE COALESCE(is_deleted, 0) = 1');
+    }
+    await run('COMMIT');
+    res.json({ deleted: result.changes });
+  } catch (err) {
+    await run('ROLLBACK').catch(() => {});
     res.status(500).json({ error: err.message });
   }
 });
@@ -104,24 +263,31 @@ router.put('/reorder', auth, async (req, res) => {
   }
 });
 
-// 批量删除卡片
-router.post('/batch-delete', auth, async (req, res) => {
+async function handleBatchRecycle(req, res) {
   const ids = (Array.isArray(req.body?.ids) ? req.body.ids : [])
     .map(Number)
     .filter(id => Number.isInteger(id) && id > 0);
-  if (!ids.length) return res.status(400).json({ error: '请选择要删除的卡片' });
+  if (!ids.length) return res.status(400).json({ error: '请选择要移入回收站的卡片' });
 
+  const reason = normalizeRecycleReason(req.body?.reason || 'manual');
   try {
     await run('BEGIN TRANSACTION');
     const placeholders = ids.map(() => '?').join(',');
-    const result = await run(`DELETE FROM cards WHERE id IN (${placeholders})`, ids);
+    const result = await run(
+      `UPDATE cards SET is_deleted = 1, deleted_at = datetime('now'), recycle_reason = ? WHERE COALESCE(is_deleted, 0) = 0 AND id IN (${placeholders})`,
+      [reason, ...ids]
+    );
     await run('COMMIT');
-    res.json({ deleted: result.changes });
+    res.json({ deleted: result.changes, recycled: result.changes });
   } catch (err) {
     await run('ROLLBACK').catch(() => {});
     res.status(500).json({ error: err.message });
   }
-});
+}
+
+// 批量移入回收站（兼容 batch-delete 路由名）
+router.post('/batch-delete', auth, handleBatchRecycle);
+router.post('/batch-recycle', auth, handleBatchRecycle);
 
 // 批量移动卡片分类
 router.post('/batch-move', auth, async (req, res) => {
@@ -145,8 +311,8 @@ router.post('/batch-move', auth, async (req, res) => {
     }
 
     const maxOrderRow = targetSubMenuId
-      ? await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM cards WHERE sub_menu_id = ?', [targetSubMenuId])
-      : await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM cards WHERE menu_id = ? AND sub_menu_id IS NULL', [targetMenuId]);
+      ? await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM cards WHERE COALESCE(is_deleted, 0) = 0 AND sub_menu_id = ?', [targetSubMenuId])
+      : await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM cards WHERE COALESCE(is_deleted, 0) = 0 AND menu_id = ? AND sub_menu_id IS NULL', [targetMenuId]);
     let nextOrder = Number(maxOrderRow?.maxOrder || 0);
 
     await run('BEGIN TRANSACTION');
@@ -167,16 +333,16 @@ router.post('/batch-move', auth, async (req, res) => {
   }
 });
 
-// 获取指定菜单的卡片（兼容前端首页与既有调用）
+// 获取指定菜单的卡片（前台导航页使用，自动过滤已软删除卡片）
 router.get('/:menuId', (req, res) => {
   const { subMenuId } = req.query;
   let query, params;
 
   if (subMenuId) {
-    query = 'SELECT * FROM cards WHERE sub_menu_id = ? ORDER BY "order" ASC, id ASC';
+    query = 'SELECT * FROM cards WHERE COALESCE(is_deleted, 0) = 0 AND sub_menu_id = ? ORDER BY "order" ASC, id ASC';
     params = [subMenuId];
   } else {
-    query = 'SELECT * FROM cards WHERE menu_id = ? AND sub_menu_id IS NULL ORDER BY "order" ASC, id ASC';
+    query = 'SELECT * FROM cards WHERE COALESCE(is_deleted, 0) = 0 AND menu_id = ? AND sub_menu_id IS NULL ORDER BY "order" ASC, id ASC';
     params = [req.params.menuId];
   }
 
@@ -186,7 +352,7 @@ router.get('/:menuId', (req, res) => {
   });
 });
 
-// 新增、修改、删除卡片需认证
+// 新增、修改、软删除卡片需认证
 router.post('/', auth, async (req, res) => {
   try {
     const { menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, order } = req.body;
@@ -199,12 +365,12 @@ router.post('/', auth, async (req, res) => {
     let resolvedOrder = order;
     if (resolvedOrder === undefined || resolvedOrder === null || resolvedOrder === '') {
       const row = resolvedSubMenuId
-        ? await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM cards WHERE sub_menu_id = ?', [resolvedSubMenuId])
-        : await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM cards WHERE menu_id = ? AND sub_menu_id IS NULL', [resolvedMenuId]);
+        ? await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM cards WHERE COALESCE(is_deleted, 0) = 0 AND sub_menu_id = ?', [resolvedSubMenuId])
+        : await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM cards WHERE COALESCE(is_deleted, 0) = 0 AND menu_id = ? AND sub_menu_id IS NULL', [resolvedMenuId]);
       resolvedOrder = Number(row?.maxOrder || 0) + 1;
     }
     const result = await run(
-      'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order") VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order", is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)',
       [resolvedMenuId, resolvedSubMenuId, title, url, logo_url || '', custom_logo_path || null, desc || '', Number(resolvedOrder) || 0]
     );
     res.json({ id: result.lastID });
@@ -235,11 +401,24 @@ router.put('/:id', auth, async (req, res) => {
   }
 });
 
+// 删除卡片默认软删除移入回收站；传入 ?permanent=1 时彻底物理删除
 router.delete('/:id', auth, (req, res) => {
-  db.run('DELETE FROM cards WHERE id=?', [req.params.id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ deleted: this.changes });
-  });
+  if (req.query.permanent === '1' || req.query.permanent === 'true') {
+    db.run('DELETE FROM cards WHERE id = ?', [req.params.id], function(err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ deleted: this.changes, permanent: true });
+    });
+    return;
+  }
+  const reason = normalizeRecycleReason(req.query.reason || req.body?.reason || 'manual');
+  db.run(
+    "UPDATE cards SET is_deleted = 1, deleted_at = datetime('now'), recycle_reason = ? WHERE id = ? AND COALESCE(is_deleted, 0) = 0",
+    [reason, req.params.id],
+    function(err) {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json({ deleted: this.changes, recycled: this.changes });
+    }
+  );
 });
 
 module.exports = router;

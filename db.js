@@ -40,6 +40,9 @@ db.serialize(() => {
     custom_logo_path TEXT,
     desc TEXT,
     "order" INTEGER DEFAULT 0,
+    is_deleted INTEGER DEFAULT 0,
+    deleted_at TEXT,
+    recycle_reason TEXT,
     FOREIGN KEY(menu_id) REFERENCES menus(id) ON DELETE CASCADE,
     FOREIGN KEY(sub_menu_id) REFERENCES sub_menus(id) ON DELETE CASCADE
   )`);
@@ -299,26 +302,52 @@ db.serialize(() => {
 // 旧版本的 last_login_time / last_login_ip 实际保存的是最近一次登录。
 // 只迁移一次，保留这条记录为本次登录，避免误当作前一次登录。
 db.ready = new Promise((resolve, reject) => {
-  db.all('PRAGMA table_info(users)', (err, columns) => {
-    if (err) return reject(err);
-    const names = new Set(columns.map(column => column.name));
-    const fields = ['current_login_at', 'current_login_ip', 'last_login_at', 'last_login_ip'];
-    db.serialize(() => {
-      for (const field of fields) {
-        if (!names.has(field)) db.run(`ALTER TABLE users ADD COLUMN ${field} TEXT`, err => {
-          if (err) reject(err);
+  db.serialize(() => {
+    db.all('PRAGMA table_info(users)', (err, columns) => {
+      if (err) return reject(err);
+      const names = new Set(columns.map(column => column.name));
+      const fields = ['current_login_at', 'current_login_ip', 'last_login_at', 'last_login_ip'];
+      db.serialize(() => {
+        for (const field of fields) {
+          if (!names.has(field)) db.run(`ALTER TABLE users ADD COLUMN ${field} TEXT`, err => {
+            if (err) reject(err);
+          });
+        }
+        if (!names.has('current_login_at') && names.has('last_login_time')) {
+          const legacyIp = names.has('last_login_ip') ? 'last_login_ip' : 'NULL';
+          db.run(`UPDATE users SET current_login_at=last_login_time,
+            current_login_ip=${legacyIp}, last_login_at=NULL, last_login_ip=NULL`, err => {
+            if (err) reject(err);
+          });
+        }
+        db.all('PRAGMA table_info(cards)', (cardErr, cardColumns) => {
+          if (cardErr) return reject(cardErr);
+          const cardColNames = new Set(cardColumns.map(column => column.name));
+          db.serialize(() => {
+            if (!cardColNames.has('is_deleted')) {
+              db.run('ALTER TABLE cards ADD COLUMN is_deleted INTEGER DEFAULT 0', err => {
+                if (err) reject(err);
+              });
+            }
+            if (!cardColNames.has('deleted_at')) {
+              db.run('ALTER TABLE cards ADD COLUMN deleted_at TEXT', err => {
+                if (err) reject(err);
+              });
+            }
+            if (!cardColNames.has('recycle_reason')) {
+              db.run('ALTER TABLE cards ADD COLUMN recycle_reason TEXT', err => {
+                if (err) reject(err);
+              });
+            }
+            db.run('CREATE INDEX IF NOT EXISTS idx_cards_is_deleted ON cards(is_deleted)', err => {
+              if (err) reject(err);
+            });
+            db.get('SELECT current_login_at, current_login_ip, last_login_at, last_login_ip FROM users LIMIT 1', err => {
+              if (err) reject(err);
+              else resolve();
+            });
+          });
         });
-      }
-      if (!names.has('current_login_at') && names.has('last_login_time')) {
-        const legacyIp = names.has('last_login_ip') ? 'last_login_ip' : 'NULL';
-        db.run(`UPDATE users SET current_login_at=last_login_time,
-          current_login_ip=${legacyIp}, last_login_at=NULL, last_login_ip=NULL`, err => {
-          if (err) reject(err);
-        });
-      }
-      db.get('SELECT current_login_at, current_login_ip, last_login_at, last_login_ip FROM users LIMIT 1', err => {
-        if (err) reject(err);
-        else resolve();
       });
     });
   });

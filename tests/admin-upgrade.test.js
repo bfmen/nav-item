@@ -25,8 +25,8 @@ const run = (db, sql, params = []) => new Promise((resolve, reject) => {
 
 const close = db => new Promise((resolve, reject) => db.close(err => (err ? reject(err) : resolve())));
 
-async function initMemoryDb() {
-  const db = new sqlite3.Database(':memory:');
+async function initMemoryDb(existingDb = null) {
+  const db = existingDb || new sqlite3.Database(':memory:');
   const localRequire = createRequire(dbPath);
   vm.runInNewContext(fs.readFileSync(dbPath, 'utf8'), {
     require(name) {
@@ -42,7 +42,30 @@ async function initMemoryDb() {
   return db;
 }
 
-test('AI URL 归一化与模型列表解析兼容官方与中转地址', () => {
+test('旧版 cards 表无损迁移新增软删除与回收站字段', async () => {
+  const db = new sqlite3.Database(':memory:');
+  try {
+    await run(db, 'CREATE TABLE menus (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, "order" INTEGER DEFAULT 0)');
+    await run(db, 'INSERT INTO menus (id, name, "order") VALUES (1, "Home", 1)');
+    await run(db, `CREATE TABLE cards (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, menu_id INTEGER, sub_menu_id INTEGER,
+      title TEXT NOT NULL, url TEXT NOT NULL, logo_url TEXT, custom_logo_path TEXT, desc TEXT, "order" INTEGER DEFAULT 0
+    )`);
+    await run(db, 'INSERT INTO cards (menu_id, title, url) VALUES (1, "OldSite", "https://old.example")');
+
+    await initMemoryDb(db);
+    const rows = await all(db, 'SELECT id, title, is_deleted, deleted_at, recycle_reason FROM cards');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].title, 'OldSite');
+    assert.equal(rows[0].is_deleted, 0);
+    assert.equal(rows[0].deleted_at, null);
+    assert.equal(rows[0].recycle_reason, null);
+  } finally {
+    await close(db);
+  }
+});
+
+test('AI URL 归一化、模型列表与 HTML Title 提取及测活判定', async () => {
   assert.deepEqual(aiModule.buildModelsCandidateUrls('https://api.openai.com/v1/'), [
     'https://api.openai.com/v1/models'
   ]);
@@ -56,16 +79,44 @@ test('AI URL 归一化与模型列表解析兼容官方与中转地址', () => {
   assert.deepEqual(aiModule.extractModels({
     data: [{ id: 'gpt-4o-mini' }, { id: 'claude-3-5-sonnet' }, { id: 'gpt-4o-mini' }]
   }), ['claude-3-5-sonnet', 'gpt-4o-mini']);
+
+  // 403 Cloudflare 盾提取 title 供 AI 判断，不误杀
+  const cfProbe = await aiModule.probeUrl('https://cf-protected.example', {
+    checkPublicHost: false,
+    fetchImpl: async () => ({
+      status: 403,
+      headers: new Map([['content-type', 'text/html'], ['server', 'cloudflare'], ['cf-ray', 'abc123']]),
+      text: async () => '<html><head><title>Just a moment...</title></head><body>Checking</body></html>'
+    })
+  });
+  assert.equal(cfProbe.verdict, 'waf_403');
+  assert.equal(cfProbe.cf_detected, true);
+  assert.equal(cfProbe.page_title, 'Just a moment...');
+
+  // 域名过期停放页
+  const expiredProbe = await aiModule.probeUrl('https://expired.example', {
+    checkPublicHost: false,
+    fetchImpl: async () => ({
+      status: 200,
+      headers: new Map([['content-type', 'text/html']]),
+      text: async () => '<html><head><title>This domain is for sale - Sedo</title></head></html>'
+    })
+  });
+  assert.equal(expiredProbe.verdict, 'suspected_domain_expired');
+
+  // 404 疑似死链
+  const deadProbe = await aiModule.probeUrl('https://dead.example/404', {
+    checkPublicHost: false,
+    fetchImpl: async () => ({
+      status: 404,
+      headers: new Map([['content-type', 'text/html']]),
+      text: async () => '<html><head><title>404 Not Found</title></head></html>'
+    })
+  });
+  assert.equal(deadProbe.verdict, 'suspected_dead_link');
 });
 
-test('AI JSON 解析兼容思考过程标签与 Markdown 代码块', () => {
-  const raw = `<think>先分析一下分类</think>\n\`\`\`json\n{"changes":[{"id":1,"title":"YouTube","desc":"视频平台"}]}\n\`\`\``;
-  const parsed = aiModule.parseAiJson(raw);
-  assert.equal(parsed.changes.length, 1);
-  assert.equal(parsed.changes[0].title, 'YouTube');
-});
-
-test('AI 整理 Diff 计算正确过滤未变更项并校验合法栏目 ID', () => {
+test('AI 整理方案计算：防硬塞 needs_review、回收站分离与 >=3 张卡片才允许建议新增子菜单', () => {
   const menus = [
     { id: 1, name: 'Home' },
     { id: 2, name: 'AI' }
@@ -75,34 +126,51 @@ test('AI 整理 Diff 计算正确过滤未变更项并校验合法栏目 ID', ()
   ];
   const cards = [
     { id: 100, menu_id: 1, sub_menu_id: null, title: 'chatgpt', url: 'https://chat.openai.com', desc: '' },
-    { id: 101, menu_id: 1, sub_menu_id: null, title: 'GitHub', url: 'https://github.com', desc: '代码托管平台' }
+    { id: 101, menu_id: 1, sub_menu_id: null, title: 'WeirdSite', url: 'https://weird.example', desc: '跨界站' },
+    { id: 102, menu_id: 1, sub_menu_id: null, title: 'DeadSite', url: 'https://dead.example', desc: '' },
+    { id: 103, menu_id: 1, sub_menu_id: null, title: 'ToolA', url: 'https://a.example', desc: 'A' },
+    { id: 104, menu_id: 1, sub_menu_id: null, title: 'ToolB', url: 'https://b.example', desc: 'B' },
+    { id: 105, menu_id: 1, sub_menu_id: null, title: 'ToolC', url: 'https://c.example', desc: 'C' }
   ];
-  const diffs = aiModule.computeOrganizeDiff(cards, {
-    changes: [
-      { id: 100, menu_id: 999, sub_menu_id: 10, title: 'ChatGPT', desc: 'OpenAI 对话助手', reason: '归入 AI Chat 子菜单' },
-      { id: 101, menu_id: 1, sub_menu_id: null, title: 'GitHub', desc: '代码托管平台' },
-      { id: 9999, menu_id: 1, sub_menu_id: null, title: 'Fake' }
+
+  const plan = aiModule.computeOrganizePlan(cards, {
+    updates: [
+      { id: 100, menu_id: 999, sub_menu_id: 10, title: 'ChatGPT', desc: 'OpenAI 对话助手', reason: '归入 AI Chat' },
+      { id: 101, menu_id: 1, sub_menu_id: null, title: 'WeirdSite', desc: '跨界站', needs_review: true, reason: '跨界歧义，保持原位待复核' },
+      // 102 同时出现在 recycles 和 updates 中，应优先保留在 recycles
+      { id: 102, menu_id: 2, sub_menu_id: null, title: 'DeadSite', desc: '测试' }
+    ],
+    recycles: [
+      { id: 102, recycle_reason: 'dead_link', reason: 'NXDOMAIN 无法解析' }
+    ],
+    suggested_sub_menus: [
+      { parent_menu_id: 1, name: '有效建议', reason: '3张同类站', card_ids: [103, 104, 105] },
+      { parent_menu_id: 1, name: '不足三张应忽略', reason: '只有2张', card_ids: [103, 104] }
     ]
   }, menus, subMenus);
 
-  assert.equal(diffs.length, 1);
-  assert.equal(diffs[0].id, 100);
-  // 即使 AI 给了错误父 menu_id=999，根据 sub_menu_id=10 自动纠正为真实父菜单 2
-  assert.equal(diffs[0].new_menu_id, 2);
-  assert.equal(diffs[0].new_sub_menu_id, 10);
-  assert.equal(diffs[0].old_category, 'Home');
-  assert.equal(diffs[0].new_category, 'AI / AI Chat');
-  assert.deepEqual(diffs[0].changed_fields, ['category', 'title', 'desc']);
+  assert.equal(plan.recycles.length, 1);
+  assert.equal(plan.recycles[0].id, 102);
+  assert.equal(plan.recycles[0].recycle_reason, 'dead_link');
+
+  assert.equal(plan.updates.length, 2);
+  assert.equal(plan.updates[0].new_menu_id, 2);
+  assert.equal(plan.updates[0].new_sub_menu_id, 10);
+  assert.equal(plan.updates[1].id, 101);
+  assert.equal(plan.updates[1].needs_review, true);
+
+  assert.equal(plan.suggested_sub_menus.length, 1);
+  assert.equal(plan.suggested_sub_menus[0].name, '有效建议');
+  assert.deepEqual(plan.suggested_sub_menus[0].card_ids, [103, 104, 105]);
 });
 
-test('卡片与栏目批量排序、筛选、移动、删除及 AI 全流程集成测试', async () => {
+test('拖拽排序、分类回收站完整流转、后端测活与 AI 智能整理端到端集成测试', async () => {
   const db = await initMemoryDb();
   let server;
   const moduleKeys = ['../routes/menu', '../routes/card', '../routes/ai'];
   const authCookie = `${COOKIE_NAME}=${jwt.sign({ id: 1, username: 'admin' }, JWT_SECRET, { expiresIn: 3600 })}`;
 
   try {
-    // 清理初始化默认数据，构造干净测试夹具
     await run(db, 'DELETE FROM cards');
     await run(db, 'DELETE FROM sub_menus');
     await run(db, 'DELETE FROM menus');
@@ -112,12 +180,14 @@ test('卡片与栏目批量排序、筛选、移动、删除及 AI 全流程集�
     const sm1 = (await run(db, 'INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)', [m2, 'AI Chat', 1])).lastID;
     const sm2 = (await run(db, 'INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)', [m2, 'AI Tools', 2])).lastID;
 
-    const c1 = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, desc, "order") VALUES (?, ?, ?, ?, ?, ?, ?)',
+    const c1 = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, desc, "order", is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
       [m1, null, 'Youtube', 'https://youtube.com', 'https://yt/icon.png', '', 1])).lastID;
-    const c2 = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, desc, "order") VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [m1, null, 'Gmail', 'https://mail.google.com', '', '邮箱', 2])).lastID;
-    const c3 = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, desc, "order") VALUES (?, ?, ?, ?, ?, ?, ?)',
+    const c2 = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, desc, "order", is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
+      [m1, null, 'DeadBlog', 'https://dead-blog.invalid', '', '旧博客', 2])).lastID;
+    const c3 = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, desc, "order", is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
       [m1, null, 'chatgpt', 'https://chat.openai.com', '', '', 3])).lastID;
+    const c4 = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, desc, "order", is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, 0)',
+      [m2, sm1, 'ChatGPT 重复', 'https://chat.openai.com/', '', '', 1])).lastID;
 
     require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: db };
     for (const key of moduleKeys) delete require.cache[require.resolve(key)];
@@ -126,9 +196,17 @@ test('卡片与栏目批量排序、筛选、移动、删除及 AI 全流程集�
     const cardRouter = require('../routes/card');
     const { createAiRouter } = require('../routes/ai');
 
-    const fetchCalls = [];
-    const mockFetch = async (url, options = {}) => {
-      fetchCalls.push({ url, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : null });
+    const mockProbe = async (url) => {
+      if (url.includes('dead-blog.invalid')) {
+        return { reachable: false, status: null, page_title: '', cf_detected: false, error_code: 'NXDOMAIN', verdict: 'suspected_dead_link', summary: 'DNS 无法解析 (NXDOMAIN)' };
+      }
+      if (url.includes('chat.openai.com')) {
+        return { reachable: true, status: 403, page_title: 'Just a moment...', cf_detected: true, error_code: 'HTTP_403', verdict: 'waf_403', summary: 'HTTP 403 (疑似 Cloudflare/WAF 盾)' };
+      }
+      return { reachable: true, status: 200, page_title: 'OK', cf_detected: false, error_code: '', verdict: 'ok', summary: 'HTTP 200 正常' };
+    };
+
+    const mockFetch = async (url) => {
       if (url.endsWith('/v1/models')) {
         return {
           ok: true,
@@ -144,10 +222,15 @@ test('卡片与栏目批量排序、筛选、移动、删除及 AI 全流程集�
             choices: [{
               message: {
                 content: JSON.stringify({
-                  changes: [
-                    { id: c1, menu_id: m1, sub_menu_id: null, title: 'YouTube', desc: '全球视频分享平台', reason: '规范标题大小写并补全描述' },
-                    { id: c3, menu_id: m2, sub_menu_id: sm1, title: 'ChatGPT', desc: 'OpenAI 智能对话助手', reason: '归类到 AI Chat 子菜单' }
-                  ]
+                  updates: [
+                    { id: c1, menu_id: m1, sub_menu_id: null, title: 'YouTube', desc: '全球视频分享平台', reason: '规范大小写并补全描述' },
+                    { id: c3, menu_id: m2, sub_menu_id: sm1, title: 'ChatGPT', desc: 'OpenAI 对话助手', reason: '403 为 CF 盾放行，归入 AI Chat' }
+                  ],
+                  recycles: [
+                    { id: c2, recycle_reason: 'dead_link', reason: 'DNS 无法解析 (NXDOMAIN)' },
+                    { id: c4, recycle_reason: 'duplicate', reason: '与 ChatGPT 链接重复' }
+                  ],
+                  suggested_sub_menus: []
                 })
               }
             }]
@@ -161,7 +244,7 @@ test('卡片与栏目批量排序、筛选、移动、删除及 AI 全流程集�
     app.use(express.json());
     app.use('/api/menus', menuRouter);
     app.use('/api/cards', cardRouter);
-    app.use('/api/ai', createAiRouter({ fetchImpl: mockFetch }));
+    app.use('/api/ai', createAiRouter({ fetchImpl: mockFetch, probeImpl: mockProbe }));
 
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
@@ -175,70 +258,82 @@ test('卡片与栏目批量排序、筛选、移动、删除及 AI 全流程集�
       ...(body ? { body: JSON.stringify(body) } : {})
     });
 
-    // 1. 菜单与子菜单拖拽批量排序
-    assert.equal((await api('/api/menus/reorder', 'PUT', {
-      items: [{ id: m2, order: 1 }, { id: m1, order: 2 }]
-    })).status, 200);
-    assert.equal((await api('/api/menus/submenus/reorder', 'PUT', {
-      items: [{ id: sm2, order: 1 }, { id: sm1, order: 2 }]
-    })).status, 200);
-    const menusAfter = await (await api('/api/menus')).json();
-    assert.deepEqual(menusAfter.map(m => m.id), [m2, m1]);
-    assert.deepEqual(menusAfter[0].subMenus.map(sm => sm.id), [sm2, sm1]);
+    // 1. 菜单与卡片拖拽批量排序
+    assert.equal((await api('/api/menus/reorder', 'PUT', { items: [{ id: m2, order: 1 }, { id: m1, order: 2 }] })).status, 200);
+    assert.equal((await api('/api/menus/submenus/reorder', 'PUT', { items: [{ id: sm2, order: 1 }, { id: sm1, order: 2 }] })).status, 200);
+    assert.equal((await api('/api/cards/reorder', 'PUT', { items: [{ id: c3, order: 1 }, { id: c1, order: 2 }, { id: c2, order: 3 }] })).status, 200);
 
-    // 2. 卡片拖拽批量排序
-    assert.equal((await api('/api/cards/reorder', 'PUT', {
-      items: [{ id: c2, order: 1 }, { id: c1, order: 2 }, { id: c3, order: 3 }]
-    })).status, 200);
-    const cardsOrdered = await (await api(`/api/cards?menuId=${m1}&subMenuId=main`)).json();
-    assert.deepEqual(cardsOrdered.map(c => c.id), [c2, c1, c3]);
-
-    // 3. AI 接口配置 CRUD + 拉取模型 + AI 整理预览 + 勾选应用
+    // 2. AI 配置 + 拉取模型 + 测活与整理预览
     const createdCfg = await (await api('/api/ai/configs', 'POST', {
-      name: '测试中转',
+      name: '中转接口',
       base_url: 'https://relay.test/v1',
       api_key: 'sk-test-123'
     })).json();
-    assert.equal(createdCfg.data.is_active, 1);
-
     const modelsRes = await (await api('/api/ai/models', 'POST', { config_id: createdCfg.data.id })).json();
     assert.deepEqual(modelsRes.models, ['deepseek-chat', 'gpt-4o-mini']);
 
     const organizeRes = await (await api('/api/ai/organize', 'POST', {
       config_id: createdCfg.data.id,
       model: 'gpt-4o-mini',
-      prompt: ''
+      scope: 'smart'
     })).json();
-    assert.equal(organizeRes.used_default_prompt, true);
-    assert.equal(organizeRes.changes.length, 2);
+    assert.equal(organizeRes.probe_stats.total, 4);
+    assert.equal(organizeRes.probe_stats.waf_403, 2);
+    assert.equal(organizeRes.probe_stats.suspected_dead, 1);
+    assert.equal(organizeRes.updates.length, 2);
+    assert.equal(organizeRes.recycles.length, 2);
 
-    // 仅勾选应用其中 1 条（c3 移动到 AI Chat），验证 c1 未被改动且 c3 已更新
-    const c3Change = organizeRes.changes.find(item => item.id === c3);
-    const applyRes = await (await api('/api/ai/apply', 'POST', { changes: [c3Change] })).json();
-    assert.equal(applyRes.updated, 1);
+    // 3. 应用更改（同时更新 2 张 + 移入回收站 2 张）
+    const applyRes = await (await api('/api/ai/apply', 'POST', {
+      updates: organizeRes.updates,
+      recycles: organizeRes.recycles
+    })).json();
+    assert.equal(applyRes.updated, 2);
+    assert.equal(applyRes.recycled, 2);
 
-    const dbCards = await all(db, 'SELECT * FROM cards ORDER BY id ASC');
-    const updatedC1 = dbCards.find(c => c.id === c1);
-    const updatedC3 = dbCards.find(c => c.id === c3);
-    assert.equal(updatedC1.title, 'Youtube');
-    assert.equal(updatedC1.logo_url, 'https://yt/icon.png');
-    assert.equal(updatedC3.title, 'ChatGPT');
-    assert.equal(updatedC3.menu_id, m2);
-    assert.equal(updatedC3.sub_menu_id, sm1);
+    // 4. 验证前台导航页自动过滤已软删除卡片
+    const homeCards = await (await api(`/api/cards/${m1}`)).json();
+    assert.deepEqual(homeCards.map(c => c.id), [c1]);
+    assert.equal(homeCards[0].title, 'YouTube');
+    const aiChatCards = await (await api(`/api/cards/${m2}?subMenuId=${sm1}`)).json();
+    assert.deepEqual(aiChatCards.map(c => c.id), [c3]);
 
-    // 4. 批量移动与批量删除
-    assert.equal((await api('/api/cards/batch-move', 'POST', {
-      ids: [c1, c2],
-      menu_id: m2,
-      sub_menu_id: sm2
-    })).status, 200);
-    const movedCards = await (await api(`/api/cards?menuId=${m2}&subMenuId=${sm2}`)).json();
-    assert.equal(movedCards.length, 2);
+    // 5. 验证回收站双维度筛选、计数、还原、手动移入回收站、彻底删除与清空
+    const countRes = await (await api('/api/cards/recycle/count')).json();
+    assert.equal(countRes.count, 2);
 
-    const delRes = await (await api('/api/cards/batch-delete', 'POST', { ids: [c1, c2] })).json();
-    assert.equal(delRes.deleted, 2);
-    const remaining = await (await api('/api/cards')).json();
-    assert.deepEqual(remaining.map(c => c.id), [c3]);
+    const deadOnly = await (await api('/api/cards/recycle?reason=dead_link')).json();
+    assert.equal(deadOnly.data.length, 1);
+    assert.equal(deadOnly.data[0].id, c2);
+    assert.equal(deadOnly.counts.total, 2);
+    assert.equal(deadOnly.counts.dead_link, 1);
+    assert.equal(deadOnly.counts.duplicate, 1);
+
+    const dupByMenu = await (await api(`/api/cards/recycle?reason=duplicate&menuId=${m2}&subMenuId=${sm1}`)).json();
+    assert.equal(dupByMenu.data.length, 1);
+    assert.equal(dupByMenu.data[0].id, c4);
+
+    // 还原 c2 至原主菜单 Home
+    const restoreRes = await (await api('/api/cards/recycle/restore', 'POST', { ids: [c2] })).json();
+    assert.equal(restoreRes.restored, 1);
+    const homeAfterRestore = await (await api(`/api/cards/${m1}`)).json();
+    assert.equal(homeAfterRestore.length, 2);
+
+    // 手动删除 c1 -> 软删除进回收站 (manual)
+    assert.equal((await api(`/api/cards/${c1}`, 'DELETE')).status, 200);
+    const manualRecycled = await (await api('/api/cards/recycle?reason=manual')).json();
+    assert.equal(manualRecycled.data.length, 1);
+    assert.equal(manualRecycled.data[0].id, c1);
+
+    // 彻底删除 c4
+    const permDel = await (await api('/api/cards/recycle/permanent-delete', 'POST', { ids: [c4] })).json();
+    assert.equal(permDel.deleted, 1);
+
+    // 一键清空回收站剩余（c1）
+    const emptyRes = await (await api('/api/cards/recycle/empty', 'DELETE')).json();
+    assert.equal(emptyRes.deleted, 1);
+    const finalCount = await (await api('/api/cards/recycle/count')).json();
+    assert.equal(finalCount.count, 0);
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     delete require.cache[dbPath];

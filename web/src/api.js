@@ -40,8 +40,15 @@ export const addCard = (data) => axios.post(`${BASE}/cards`, data);
 export const updateCard = (id, data) => axios.put(`${BASE}/cards/${id}`, data);
 export const deleteCard = (id) => axios.delete(`${BASE}/cards/${id}`);
 export const reorderCards = (items) => axios.put(`${BASE}/cards/reorder`, { items });
-export const batchDeleteCards = (ids) => axios.post(`${BASE}/cards/batch-delete`, { ids });
+export const batchDeleteCards = (ids, reason = 'manual') => axios.post(`${BASE}/cards/batch-delete`, { ids, reason });
 export const batchMoveCards = (data) => axios.post(`${BASE}/cards/batch-move`, data);
+
+// 回收站相关API
+export const getRecycleCards = (params = {}) => axios.get(`${BASE}/cards/recycle`, { params });
+export const getRecycleCount = () => axios.get(`${BASE}/cards/recycle/count`);
+export const restoreRecycleCards = (ids) => axios.post(`${BASE}/cards/recycle/restore`, { ids });
+export const permanentDeleteCards = (ids) => axios.post(`${BASE}/cards/recycle/permanent-delete`, { ids });
+export const emptyRecycleBin = (params = {}) => axios.delete(`${BASE}/cards/recycle/empty`, { params });
 
 export const uploadLogo = (file) => {
   const formData = new FormData();
@@ -57,7 +64,7 @@ export const activateAiConfig = (id) => axios.put(`${BASE}/ai/configs/${id}/acti
 export const deleteAiConfig = (id) => axios.delete(`${BASE}/ai/configs/${id}`);
 export const fetchAiModels = (data) => axios.post(`${BASE}/ai/models`, data);
 export const runAiOrganize = (data) => axios.post(`${BASE}/ai/organize`, data);
-export const applyAiOrganize = (changes) => axios.post(`${BASE}/ai/apply`, { changes });
+export const applyAiOrganize = (payload) => axios.post(`${BASE}/ai/apply`, Array.isArray(payload) ? { updates: payload } : payload);
 
 // 友链API
 export const getFriends = () => axios.get(`${BASE}/friends`);

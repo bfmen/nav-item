@@ -5,8 +5,8 @@
         <div class="ai-modal-header">
           <div class="ai-header-title">
             <span class="ai-sparkle">✨</span>
-            <h3>AI 智能整理</h3>
-            <span class="ai-step-badge">{{ step === 'preview' ? '变更预览确认' : '接口配置与执行' }}</span>
+            <h3>AI 智能整理与死链检测</h3>
+            <span class="ai-step-badge">{{ step === 'preview' ? 'Diff 预览确认' : '接口配置与执行' }}</span>
           </div>
           <button type="button" class="ai-close-btn" @click="handleClose" title="关闭">✕</button>
         </div>
@@ -30,7 +30,6 @@
                 </button>
               </div>
 
-              <!-- 已有接口列表 -->
               <div v-if="configs.length" class="config-list">
                 <div
                   v-for="cfg in configs"
@@ -59,7 +58,6 @@
                 尚未配置 AI 接口，请点击右上角「+ 新增接口」添加 OpenAI 或兼容中转服务。
               </div>
 
-              <!-- 新增 / 编辑配置表单 -->
               <div v-if="showConfigForm" class="config-form">
                 <div class="config-form-title">{{ editingConfigId ? '编辑 AI 接口' : '新增 AI 接口' }}</div>
                 <div class="form-grid">
@@ -116,11 +114,7 @@
                 </button>
               </div>
               <div class="model-select-row">
-                <select
-                  v-if="fetchedModels.length"
-                  v-model="selectedModel"
-                  class="ai-select"
-                >
+                <select v-if="fetchedModels.length" v-model="selectedModel" class="ai-select">
                   <option value="" disabled>-- 从拉取的模型中选择 --</option>
                   <option v-for="m in fetchedModels" :key="m" :value="m">{{ m }}</option>
                 </select>
@@ -133,42 +127,62 @@
               </div>
             </section>
 
-            <!-- 3. 整理范围与 Prompt -->
+            <!-- 3. 整理范围、后端测活与自定义 Prompt -->
             <section class="ai-section">
               <div class="ai-section-head">
                 <div class="ai-section-title">
                   <span class="step-num">3</span>
                   <span>整理范围与整理要求（选填）</span>
                 </div>
-                <div class="scope-switch">
-                  <label class="scope-option">
-                    <input v-model="organizeScope" type="radio" value="all" />
-                    <span>全部卡片</span>
-                  </label>
-                  <label class="scope-option" :class="{ disabled: !hasCurrentFilter }">
-                    <input v-model="organizeScope" type="radio" value="current" :disabled="!hasCurrentFilter" />
-                    <span>当前筛选栏目</span>
-                  </label>
-                </div>
+                <label class="probe-toggle">
+                  <input v-model="enableProbe" type="checkbox" />
+                  <span>启用后端真实测活（含 403/CF 盾识别）</span>
+                </label>
               </div>
+
+              <div class="scope-cards">
+                <label :class="['scope-card', { active: organizeScope === 'smart' }]">
+                  <input v-model="organizeScope" type="radio" value="smart" />
+                  <div>
+                    <div class="scope-card-title">推荐：未分类/缺描述整理 + 全站死链检测</div>
+                    <div class="scope-card-desc">全站测活并检测重复，仅对异常、缺描述及未分类卡片做归类整理，不打乱已有布局</div>
+                  </div>
+                </label>
+                <label :class="['scope-card', { active: organizeScope === 'all' }]">
+                  <input v-model="organizeScope" type="radio" value="all" />
+                  <div>
+                    <div class="scope-card-title">全站完整整理 + 全站死链检测</div>
+                    <div class="scope-card-desc">全站卡片一并交给 AI 检查描述补全、名称大小写规范与死链归类</div>
+                  </div>
+                </label>
+                <label :class="['scope-card', { active: organizeScope === 'current', disabled: !hasCurrentFilter }]">
+                  <input v-model="organizeScope" type="radio" value="current" :disabled="!hasCurrentFilter" />
+                  <div>
+                    <div class="scope-card-title">仅当前筛选栏目</div>
+                    <div class="scope-card-desc">{{ hasCurrentFilter ? '仅测活并整理当前表格选定的栏目' : '请在卡片列表选定具体主菜单后可用' }}</div>
+                  </div>
+                </label>
+              </div>
+
               <textarea
                 v-model="customPrompt"
                 class="ai-textarea"
                 rows="3"
-                placeholder="选填。留空将使用内置默认规则：自动识别现有主菜单/子菜单结构进行智能归类、补全缺失的简洁中文描述、统一网站标题大小写规范。"
+                placeholder="自定义整理要求（选填）。留空将执行默认「防乱 + 防硬塞平衡版」规则：严禁自建/改名栏目、匹配度不足归入「待归类」或标记需人工复核、≥3 张同类新站点仅给出新增子菜单建议、补全 15 字内中文描述并规范大小写、结合后端测活标记死链/停用/重复卡片。"
               ></textarea>
             </section>
           </div>
 
-          <!-- 阶段二：Diff 变更预览与确认 -->
+          <!-- 阶段二：双 Tab Diff 预览 + 建议新增子菜单 -->
           <div v-else class="ai-preview-view">
+            <!-- 测活统计与返回栏 -->
             <div class="preview-summary">
               <div class="summary-left">
-                <span>已分析 <strong>{{ previewMeta.totalAnalyzed }}</strong> 张卡片</span>
-                <span class="divider">·</span>
-                <span>建议修改 <strong>{{ diffChanges.length }}</strong> 项</span>
-                <span class="divider">·</span>
-                <span>已勾选 <strong>{{ selectedDiffIds.length }}</strong> 项</span>
+                <span>探测 <strong>{{ previewMeta.totalProbed }}</strong></span>
+                <span class="pill ok">正常 {{ probeStats.reachable }}</span>
+                <span v-if="probeStats.waf_403" class="pill waf">403/WAF复核 {{ probeStats.waf_403 }}</span>
+                <span v-if="probeStats.suspected_dead" class="pill dead">疑似死链 {{ probeStats.suspected_dead }}</span>
+                <span v-if="probeStats.suspected_expired" class="pill expired">疑似停用 {{ probeStats.suspected_expired }}</span>
                 <span v-if="previewMeta.model" class="model-tag">{{ previewMeta.model }}</span>
               </div>
               <button type="button" class="ai-btn ai-btn-sm ai-btn-ghost" @click="step = 'config'">
@@ -176,74 +190,190 @@
               </button>
             </div>
 
-            <div v-if="!diffChanges.length" class="empty-diff">
-              <div class="empty-diff-icon">✅</div>
-              <p>AI 分析完成，当前卡片的分类、标题和描述均已合理，无需调整。</p>
+            <!-- 建议新增子菜单提示区（仅作建议，需用户手动点击确认创建） -->
+            <div v-if="suggestedSubMenus.length" class="suggestion-panel">
+              <div class="suggestion-header">
+                <strong>💡 AI 建议新增子菜单（仅作建议，点击确认创建后才生效）</strong>
+              </div>
+              <div class="suggestion-list">
+                <div v-for="(sug, idx) in suggestedSubMenus" :key="`${sug.parent_menu_id}-${sug.name}`" class="suggestion-item">
+                  <div class="suggestion-info">
+                    <div class="suggestion-title">
+                      <span class="cat-badge new">{{ sug.parent_menu_name }} / {{ sug.name }}</span>
+                      <span class="suggestion-reason">{{ sug.reason }}</span>
+                    </div>
+                    <div class="suggestion-cards">
+                      涉及 {{ sug.card_ids.length }} 张卡片：{{ sug.card_titles.join('、') }}
+                    </div>
+                  </div>
+                  <div class="suggestion-action">
+                    <span v-if="sug.created" class="created-tag">✓ 已创建并关联</span>
+                    <button
+                      v-else
+                      type="button"
+                      class="ai-btn ai-btn-sm ai-btn-outline"
+                      :disabled="creatingSubIndex === idx"
+                      @click="handleConfirmCreateSubMenu(sug, idx)"
+                    >
+                      {{ creatingSubIndex === idx ? '创建中...' : '确认创建并关联卡片' }}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div v-else class="diff-table-wrap">
-              <table class="diff-table">
-                <thead>
-                  <tr>
-                    <th class="col-check">
-                      <input
-                        type="checkbox"
-                        :checked="allDiffSelected"
-                        :indeterminate.prop="someDiffSelected"
-                        @change="toggleAllDiffs"
-                      />
-                    </th>
-                    <th class="col-card">卡片标题 / 网址</th>
-                    <th class="col-cat">分类变更</th>
-                    <th class="col-desc">描述变更</th>
-                    <th class="col-reason">说明</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="item in diffChanges"
-                    :key="item.id"
-                    :class="{ unselected: !selectedDiffIds.includes(item.id) }"
-                  >
-                    <td class="col-check">
-                      <input
-                        type="checkbox"
-                        :checked="selectedDiffIds.includes(item.id)"
-                        @change="toggleDiffItem(item.id)"
-                      />
-                    </td>
-                    <td class="col-card">
-                      <div v-if="item.changed_fields.includes('title')" class="diff-inline">
-                        <span class="diff-old">{{ item.old_title }}</span>
-                        <span class="diff-arrow">→</span>
-                        <span class="diff-new">{{ item.new_title }}</span>
-                      </div>
-                      <div v-else class="card-title-plain">{{ item.old_title }}</div>
-                      <div class="card-url-sub" :title="item.url">{{ item.url }}</div>
-                    </td>
-                    <td class="col-cat">
-                      <div v-if="item.changed_fields.includes('category')" class="diff-stack">
-                        <span class="cat-badge old">{{ item.old_category }}</span>
-                        <span class="diff-arrow">→</span>
-                        <span class="cat-badge new">{{ item.new_category }}</span>
-                      </div>
-                      <span v-else class="unchanged-text">{{ item.old_category }}</span>
-                    </td>
-                    <td class="col-desc">
-                      <div v-if="item.changed_fields.includes('desc')" class="diff-stack">
-                        <span class="diff-old">{{ item.old_desc || '（空）' }}</span>
-                        <span class="diff-arrow">→</span>
-                        <span class="diff-new">{{ item.new_desc || '（空）' }}</span>
-                      </div>
-                      <span v-else class="unchanged-text">{{ item.old_desc || '（空）' }}</span>
-                    </td>
-                    <td class="col-reason">
-                      <span class="reason-text">{{ item.reason || '-' }}</span>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <!-- 双 Tab 切换栏 -->
+            <div class="preview-tabs">
+              <button
+                type="button"
+                :class="['preview-tab', { active: previewTab === 'updates' }]"
+                @click="previewTab = 'updates'"
+              >
+                <span>📝 待移动 / 补全描述</span>
+                <span class="tab-badge">{{ selectedUpdateIds.length }} / {{ diffUpdates.length }}</span>
+              </button>
+              <button
+                type="button"
+                :class="['preview-tab recycle-tab', { active: previewTab === 'recycles' }]"
+                @click="previewTab = 'recycles'"
+              >
+                <span>🗑 拟移入回收站（失效 / 重复）</span>
+                <span class="tab-badge danger">{{ selectedRecycleIds.length }} / {{ diffRecycles.length }}</span>
+              </button>
             </div>
+
+            <!-- Tab 1：待移动 / 补全描述 -->
+            <template v-if="previewTab === 'updates'">
+              <div v-if="!diffUpdates.length" class="empty-diff">
+                <div class="empty-diff-icon">✅</div>
+                <p>暂无需要移动分类或补全描述的卡片。</p>
+              </div>
+              <div v-else class="diff-table-wrap">
+                <table class="diff-table">
+                  <thead>
+                    <tr>
+                      <th class="col-check">
+                        <input
+                          type="checkbox"
+                          :checked="allUpdatesSelected"
+                          :indeterminate.prop="someUpdatesSelected"
+                          @change="toggleAllUpdates"
+                        />
+                      </th>
+                      <th class="col-card">卡片标题 / 网址</th>
+                      <th class="col-cat">分类变更</th>
+                      <th class="col-desc">描述变更</th>
+                      <th class="col-reason">说明 / 状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="item in diffUpdates"
+                      :key="item.id"
+                      :class="{ unselected: !selectedUpdateIds.includes(item.id) }"
+                    >
+                      <td class="col-check">
+                        <input
+                          type="checkbox"
+                          :checked="selectedUpdateIds.includes(item.id)"
+                          @change="toggleUpdateItem(item.id)"
+                        />
+                      </td>
+                      <td class="col-card">
+                        <div v-if="item.changed_fields.includes('title')" class="diff-inline">
+                          <span class="diff-old">{{ item.old_title }}</span>
+                          <span class="diff-arrow">→</span>
+                          <span class="diff-new">{{ item.new_title }}</span>
+                        </div>
+                        <div v-else class="card-title-plain">{{ item.old_title }}</div>
+                        <div class="card-url-sub" :title="item.url">{{ item.url }}</div>
+                      </td>
+                      <td class="col-cat">
+                        <div v-if="item.changed_fields.includes('category')" class="diff-stack">
+                          <span class="cat-badge old">{{ item.old_category }}</span>
+                          <span class="diff-arrow">→</span>
+                          <span class="cat-badge new">{{ item.new_category }}</span>
+                        </div>
+                        <span v-else class="unchanged-text">{{ item.old_category }}</span>
+                      </td>
+                      <td class="col-desc">
+                        <div v-if="item.changed_fields.includes('desc')" class="diff-stack">
+                          <span class="diff-old">{{ item.old_desc || '（空）' }}</span>
+                          <span class="diff-arrow">→</span>
+                          <span class="diff-new">{{ item.new_desc || '（空）' }}</span>
+                        </div>
+                        <span v-else class="unchanged-text">{{ item.old_desc || '（空）' }}</span>
+                      </td>
+                      <td class="col-reason">
+                        <span v-if="item.needs_review" class="review-badge">需人工复核</span>
+                        <span class="reason-text">{{ item.reason || '-' }}</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+
+            <!-- Tab 2：拟移入回收站 -->
+            <template v-else>
+              <div v-if="!diffRecycles.length" class="empty-diff">
+                <div class="empty-diff-icon">🎉</div>
+                <p>太棒了！本次未发现确认失效、域名停用或重复的卡片。</p>
+              </div>
+              <div v-else class="diff-table-wrap">
+                <table class="diff-table">
+                  <thead>
+                    <tr>
+                      <th class="col-check">
+                        <input
+                          type="checkbox"
+                          :checked="allRecyclesSelected"
+                          :indeterminate.prop="someRecyclesSelected"
+                          @change="toggleAllRecycles"
+                        />
+                      </th>
+                      <th class="col-card">卡片标题 / 网址（点击可复核）</th>
+                      <th class="col-cat">原所属栏目</th>
+                      <th class="col-recycle-type">归入原因</th>
+                      <th class="col-desc">测活结果与判定依据</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="item in diffRecycles"
+                      :key="item.id"
+                      :class="{ unselected: !selectedRecycleIds.includes(item.id) }"
+                    >
+                      <td class="col-check">
+                        <input
+                          type="checkbox"
+                          :checked="selectedRecycleIds.includes(item.id)"
+                          @change="toggleRecycleItem(item.id)"
+                        />
+                      </td>
+                      <td class="col-card">
+                        <div class="card-title-plain">{{ item.title }}</div>
+                        <a :href="item.url" target="_blank" rel="noopener noreferrer" class="card-url-link" :title="item.url">
+                          {{ item.url }}
+                        </a>
+                      </td>
+                      <td class="col-cat">
+                        <span class="unchanged-text">{{ item.old_category }}</span>
+                      </td>
+                      <td class="col-recycle-type">
+                        <span :class="['recycle-badge', item.recycle_reason]">
+                          {{ formatRecycleReason(item.recycle_reason) }}
+                        </span>
+                      </td>
+                      <td class="col-desc">
+                        <div class="reason-text">{{ item.reason }}</div>
+                        <div v-if="item.probe_summary" class="probe-sub">{{ item.probe_summary }}</div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -257,19 +387,19 @@
               @click="handleOrganize"
             >
               <span v-if="organizing" class="spinner"></span>
-              {{ organizing ? 'AI 正在分析整理中...' : '✨ 开始 AI 智能整理' }}
+              {{ organizing ? (enableProbe ? '正在后端测活并执行 AI 分析...' : 'AI 正在分析整理中...') : '✨ 开始测活与 AI 整理' }}
             </button>
           </template>
           <template v-else>
             <button type="button" class="ai-btn ai-btn-ghost" @click="step = 'config'">重新整理</button>
             <button
-              v-if="diffChanges.length"
+              v-if="diffUpdates.length || diffRecycles.length"
               type="button"
               class="ai-btn ai-btn-primary"
-              :disabled="applying || !selectedDiffIds.length"
+              :disabled="applying || (selectedUpdateIds.length === 0 && selectedRecycleIds.length === 0)"
               @click="handleApply"
             >
-              {{ applying ? '正在写入数据库...' : `应用更改 (${selectedDiffIds.length})` }}
+              {{ applying ? '正在应用更改...' : `应用更改（更新 ${selectedUpdateIds.length} · 移入回收站 ${selectedRecycleIds.length}）` }}
             </button>
             <button v-else type="button" class="ai-btn ai-btn-primary" @click="handleClose">完成</button>
           </template>
@@ -289,7 +419,8 @@ import {
   deleteAiConfig,
   fetchAiModels,
   runAiOrganize,
-  applyAiOrganize
+  applyAiOrganize,
+  addSubMenu
 } from '../api';
 
 const props = defineProps({
@@ -301,6 +432,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'applied']);
 
 const step = ref('config');
+const previewTab = ref('updates');
 const configs = ref([]);
 const showConfigForm = ref(false);
 const editingConfigId = ref(null);
@@ -311,24 +443,38 @@ const configForm = ref({ name: '', base_url: 'https://api.openai.com/v1', api_ke
 const fetchedModels = ref([]);
 const fetchingModels = ref(false);
 const selectedModel = ref('');
-const organizeScope = ref('all');
+const organizeScope = ref('smart');
+const enableProbe = ref(true);
 const customPrompt = ref('');
 const organizing = ref(false);
 const applying = ref(false);
 
-const diffChanges = ref([]);
-const selectedDiffIds = ref([]);
-const previewMeta = ref({ totalAnalyzed: 0, model: '' });
+const diffUpdates = ref([]);
+const selectedUpdateIds = ref([]);
+const diffRecycles = ref([]);
+const selectedRecycleIds = ref([]);
+const suggestedSubMenus = ref([]);
+const creatingSubIndex = ref(-1);
+const probeStats = ref({ total: 0, reachable: 0, waf_403: 0, suspected_dead: 0, suspected_expired: 0 });
+const previewMeta = ref({ totalAnalyzed: 0, totalProbed: 0, model: '' });
 const notice = ref({ text: '', type: 'info' });
+const createdAnySubMenu = ref(false);
 
 const activeConfig = computed(() => configs.value.find(c => c.is_active) || configs.value[0] || null);
 const hasCurrentFilter = computed(() => props.currentMenuId !== 'all' && props.currentMenuId !== '' && props.currentMenuId != null);
 
-const allDiffSelected = computed(() =>
-  diffChanges.value.length > 0 && selectedDiffIds.value.length === diffChanges.value.length
+const allUpdatesSelected = computed(() =>
+  diffUpdates.value.length > 0 && selectedUpdateIds.value.length === diffUpdates.value.length
 );
-const someDiffSelected = computed(() =>
-  selectedDiffIds.value.length > 0 && selectedDiffIds.value.length < diffChanges.value.length
+const someUpdatesSelected = computed(() =>
+  selectedUpdateIds.value.length > 0 && selectedUpdateIds.value.length < diffUpdates.value.length
+);
+
+const allRecyclesSelected = computed(() =>
+  diffRecycles.value.length > 0 && selectedRecycleIds.value.length === diffRecycles.value.length
+);
+const someRecyclesSelected = computed(() =>
+  selectedRecycleIds.value.length > 0 && selectedRecycleIds.value.length < diffRecycles.value.length
 );
 
 function setNotice(text, type = 'info') {
@@ -343,7 +489,11 @@ watch(() => props.visible, async (val) => {
   if (val) {
     clearNotice();
     step.value = 'config';
-    if (!hasCurrentFilter.value) organizeScope.value = 'all';
+    previewTab.value = 'updates';
+    createdAnySubMenu.value = false;
+    if (!hasCurrentFilter.value && organizeScope.value === 'current') {
+      organizeScope.value = 'smart';
+    }
     await loadConfigs();
   }
 });
@@ -359,11 +509,7 @@ async function loadConfigs() {
     const { data } = await getAiConfigs();
     configs.value = data.data || [];
     const active = configs.value.find(c => c.is_active) || configs.value[0];
-    if (active) {
-      selectedModel.value = active.model || '';
-    } else {
-      selectedModel.value = '';
-    }
+    selectedModel.value = active ? (active.model || '') : '';
   } catch (err) {
     setNotice(err.response?.data?.message || '读取 AI 接口配置失败', 'error');
   }
@@ -488,19 +634,29 @@ async function handleOrganize() {
     const payload = {
       config_id: activeConfig.value.id,
       model: selectedModel.value.trim(),
-      prompt: customPrompt.value.trim()
+      prompt: customPrompt.value.trim(),
+      scope: organizeScope.value,
+      enable_probe: enableProbe.value
     };
     if (organizeScope.value === 'current' && hasCurrentFilter.value) {
       payload.menu_id = props.currentMenuId;
       payload.sub_menu_id = props.currentSubMenuId;
     }
     const { data } = await runAiOrganize(payload);
-    diffChanges.value = data.changes || [];
-    selectedDiffIds.value = diffChanges.value.map(item => item.id);
+    diffUpdates.value = data.updates || data.changes || [];
+    diffRecycles.value = data.recycles || [];
+    suggestedSubMenus.value = (data.suggested_sub_menus || []).map(s => ({ ...s, created: false }));
+    selectedUpdateIds.value = diffUpdates.value
+      .filter(item => item.changed_fields && item.changed_fields.length > 0)
+      .map(item => item.id);
+    selectedRecycleIds.value = diffRecycles.value.map(item => item.id);
+    probeStats.value = data.probe_stats || { total: 0, reachable: 0, waf_403: 0, suspected_dead: 0, suspected_expired: 0 };
     previewMeta.value = {
       totalAnalyzed: data.total_analyzed || 0,
+      totalProbed: data.total_probed || data.total_analyzed || 0,
       model: data.model || selectedModel.value.trim()
     };
+    previewTab.value = !diffUpdates.value.length && diffRecycles.value.length ? 'recycles' : 'updates';
     step.value = 'preview';
   } catch (err) {
     setNotice(err.response?.data?.message || 'AI 智能整理执行失败', 'error');
@@ -509,31 +665,117 @@ async function handleOrganize() {
   }
 }
 
-function toggleAllDiffs(event) {
-  selectedDiffIds.value = event.target.checked
-    ? diffChanges.value.map(item => item.id)
-    : [];
+async function handleConfirmCreateSubMenu(sug, idx) {
+  if (!window.confirm(`确定要在「${sug.parent_menu_name}」下新建子菜单「${sug.name}」并将涉及的 ${sug.card_ids.length} 张卡片关联到该子菜单吗？`)) {
+    return;
+  }
+  creatingSubIndex.value = idx;
+  clearNotice();
+  try {
+    const { data } = await addSubMenu(sug.parent_menu_id, { name: sug.name, order: 99 });
+    const newSubMenuId = data.id;
+    sug.created = true;
+    createdAnySubMenu.value = true;
+
+    const newCategoryLabel = `${sug.parent_menu_name} / ${sug.name}`;
+    for (let i = 0; i < sug.card_ids.length; i++) {
+      const cardId = sug.card_ids[i];
+      const existing = diffUpdates.value.find(item => item.id === cardId);
+      if (existing) {
+        existing.new_menu_id = sug.parent_menu_id;
+        existing.new_sub_menu_id = newSubMenuId;
+        existing.new_category = newCategoryLabel;
+        existing.needs_review = false;
+        if (!existing.changed_fields.includes('category')) {
+          existing.changed_fields = ['category', ...existing.changed_fields];
+        }
+        existing.reason = `归入新建子菜单「${sug.name}」`;
+      } else {
+        diffUpdates.value.push({
+          id: cardId,
+          url: '',
+          old_menu_id: null,
+          old_sub_menu_id: null,
+          old_category: '原分类',
+          new_menu_id: sug.parent_menu_id,
+          new_sub_menu_id: newSubMenuId,
+          new_category: newCategoryLabel,
+          old_title: sug.card_titles[i] || `卡片 #${cardId}`,
+          new_title: sug.card_titles[i] || `卡片 #${cardId}`,
+          old_desc: '',
+          new_desc: '',
+          changed_fields: ['category'],
+          needs_review: false,
+          reason: `归入新建子菜单「${sug.name}」`
+        });
+      }
+      if (!selectedUpdateIds.value.includes(cardId)) {
+        selectedUpdateIds.value = [...selectedUpdateIds.value, cardId];
+      }
+    }
+    setNotice(`已创建子菜单「${newCategoryLabel}」并更新预览，请点击下方「应用更改」完成归类`, 'success');
+  } catch (err) {
+    setNotice(err.response?.data?.error || '创建子菜单失败', 'error');
+  } finally {
+    creatingSubIndex.value = -1;
+  }
 }
 
-function toggleDiffItem(id) {
-  if (selectedDiffIds.value.includes(id)) {
-    selectedDiffIds.value = selectedDiffIds.value.filter(item => item !== id);
+function toggleAllUpdates(event) {
+  selectedUpdateIds.value = event.target.checked ? diffUpdates.value.map(item => item.id) : [];
+}
+
+function toggleUpdateItem(id) {
+  if (selectedUpdateIds.value.includes(id)) {
+    selectedUpdateIds.value = selectedUpdateIds.value.filter(item => item !== id);
   } else {
-    selectedDiffIds.value = [...selectedDiffIds.value, id];
+    selectedUpdateIds.value = [...selectedUpdateIds.value, id];
+  }
+}
+
+function toggleAllRecycles(event) {
+  selectedRecycleIds.value = event.target.checked ? diffRecycles.value.map(item => item.id) : [];
+}
+
+function toggleRecycleItem(id) {
+  if (selectedRecycleIds.value.includes(id)) {
+    selectedRecycleIds.value = selectedRecycleIds.value.filter(item => item !== id);
+  } else {
+    selectedRecycleIds.value = [...selectedRecycleIds.value, id];
+  }
+}
+
+function formatRecycleReason(reason) {
+  switch (reason) {
+    case 'dead_link': return '死链无法访问';
+    case 'domain_expired': return '域名停用';
+    case 'duplicate': return '重复链接';
+    default: return '手动删除';
   }
 }
 
 async function handleApply() {
-  const chosen = diffChanges.value.filter(item => selectedDiffIds.value.includes(item.id));
-  if (!chosen.length) {
+  const chosenUpdates = diffUpdates.value.filter(item => selectedUpdateIds.value.includes(item.id));
+  const chosenRecycles = diffRecycles.value.filter(item => selectedRecycleIds.value.includes(item.id));
+  if (!chosenUpdates.length && !chosenRecycles.length) {
     setNotice('请至少勾选一条要应用的更改', 'error');
     return;
   }
   applying.value = true;
   clearNotice();
   try {
-    const { data } = await applyAiOrganize(chosen);
-    emit('applied', data.updated || chosen.length);
+    const { data } = await applyAiOrganize({
+      updates: chosenUpdates,
+      recycles: chosenRecycles
+    });
+    if (data.recycled > 0) {
+      window.dispatchEvent(new Event('recycle:updated'));
+    }
+    emit('applied', {
+      updated: data.updated || 0,
+      recycled: data.recycled || 0,
+      menusChanged: createdAnySubMenu.value
+    });
     emit('close');
   } catch (err) {
     setNotice(err.response?.data?.message || '应用更改失败', 'error');
@@ -544,6 +786,9 @@ async function handleApply() {
 
 function handleClose() {
   if (organizing.value || applying.value) return;
+  if (createdAnySubMenu.value) {
+    emit('applied', { updated: 0, recycled: 0, menusChanged: true });
+  }
   emit('close');
 }
 </script>
@@ -564,8 +809,8 @@ function handleClose() {
 .ai-modal {
   background: #ffffff;
   border-radius: 16px;
-  width: min(980px, 95vw);
-  max-height: 90vh;
+  width: min(1040px, 96vw);
+  max-height: 92vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 24px 64px rgba(15, 23, 42, 0.25);
@@ -577,7 +822,7 @@ function handleClose() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 20px;
+  padding: 13px 20px;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   color: #fff;
 }
@@ -590,16 +835,12 @@ function handleClose() {
 
 .ai-header-title h3 {
   margin: 0;
-  font-size: 1.1rem;
+  font-size: 1.06rem;
   font-weight: 600;
 }
 
-.ai-sparkle {
-  font-size: 1.15rem;
-}
-
 .ai-step-badge {
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   background: rgba(255, 255, 255, 0.2);
   padding: 2px 10px;
   border-radius: 999px;
@@ -613,44 +854,38 @@ function handleClose() {
   height: 30px;
   border-radius: 8px;
   cursor: pointer;
-  font-size: 0.95rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
-
-.ai-close-btn:hover {
-  background: rgba(255, 255, 255, 0.28);
-}
+.ai-close-btn:hover { background: rgba(255, 255, 255, 0.28); }
 
 .ai-modal-body {
-  padding: 18px 20px;
+  padding: 16px 20px;
   overflow-y: auto;
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
 .ai-notice {
-  padding: 10px 14px;
+  padding: 9px 14px;
   border-radius: 8px;
-  font-size: 0.875rem;
+  font-size: 0.85rem;
 }
 .ai-notice.success { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
 .ai-notice.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 .ai-notice.info { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
 
-.ai-config-view {
+.ai-config-view,
+.ai-preview-view {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
 .ai-section {
   border: 1px solid #e2e8f0;
   border-radius: 12px;
-  padding: 14px 16px;
+  padding: 13px 16px;
   background: #f8fafc;
 }
 
@@ -659,7 +894,7 @@ function handleClose() {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   flex-wrap: wrap;
 }
 
@@ -668,17 +903,16 @@ function handleClose() {
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  font-size: 0.92rem;
-  color: #1e293b;
+  font-size: 0.9rem;
 }
 
 .step-num {
-  width: 22px;
-  height: 22px;
+  width: 21px;
+  height: 21px;
   border-radius: 50%;
   background: #667eea;
   color: #fff;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -694,18 +928,13 @@ function handleClose() {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 9px 12px;
   border-radius: 10px;
   border: 1.5px solid #e2e8f0;
   background: #fff;
   cursor: pointer;
-  transition: all 0.15s ease;
 }
-
-.config-item:hover {
-  border-color: #a5b4fc;
-}
-
+.config-item:hover { border-color: #a5b4fc; }
 .config-item.active {
   border-color: #667eea;
   background: #f5f7ff;
@@ -713,18 +942,14 @@ function handleClose() {
 }
 
 .radio-dot {
-  width: 16px;
-  height: 16px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   border: 2px solid #cbd5e1;
   display: inline-block;
   position: relative;
 }
-
-.radio-dot.checked {
-  border-color: #667eea;
-}
-
+.radio-dot.checked { border-color: #667eea; }
 .radio-dot.checked::after {
   content: '';
   position: absolute;
@@ -733,32 +958,10 @@ function handleClose() {
   background: #667eea;
 }
 
-.config-meta {
-  flex: 1;
-  min-width: 0;
-}
-
-.config-name-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.config-name {
-  font-weight: 600;
-  font-size: 0.88rem;
-  color: #0f172a;
-}
-
-.active-tag {
-  font-size: 0.7rem;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: #667eea;
-  color: #fff;
-}
-
+.config-meta { flex: 1; min-width: 0; }
+.config-name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.config-name { font-weight: 600; font-size: 0.86rem; }
+.active-tag { font-size: 0.7rem; padding: 1px 6px; border-radius: 4px; background: #667eea; color: #fff; }
 .model-tag {
   font-size: 0.72rem;
   padding: 1px 7px;
@@ -770,20 +973,8 @@ function handleClose() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.config-url {
-  font-size: 0.76rem;
-  color: #64748b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 2px;
-}
-
-.config-actions {
-  display: flex;
-  gap: 4px;
-}
+.config-url { font-size: 0.75rem; color: #64748b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+.config-actions { display: flex; gap: 4px; }
 
 .ai-icon-btn {
   border: 1px solid #e2e8f0;
@@ -793,202 +984,213 @@ function handleClose() {
   height: 26px;
   border-radius: 6px;
   cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.8rem;
 }
-.ai-icon-btn:hover { background: #f1f5f9; color: #1e293b; }
+.ai-icon-btn:hover { background: #f1f5f9; }
 .ai-icon-btn.danger:hover { background: #fee2e2; color: #dc2626; border-color: #fecaca; }
 
 .empty-config-tip {
   text-align: center;
-  padding: 16px;
+  padding: 14px;
   color: #64748b;
-  font-size: 0.86rem;
+  font-size: 0.85rem;
   background: #fff;
   border-radius: 8px;
   border: 1px dashed #cbd5e1;
 }
 
 .config-form {
-  margin-top: 12px;
-  padding: 14px;
+  margin-top: 10px;
+  padding: 13px;
   background: #fff;
   border: 1px solid #cbd5e1;
   border-radius: 10px;
 }
-
-.config-form-title {
-  font-weight: 600;
-  font-size: 0.88rem;
-  margin-bottom: 10px;
-  color: #334155;
-}
-
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-}
-
-.form-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 0.8rem;
-  color: #475569;
-}
-
+.config-form-title { font-weight: 600; font-size: 0.86rem; margin-bottom: 10px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.form-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: #475569; }
 .form-field input {
-  padding: 8px 10px;
+  padding: 7px 10px;
   border: 1px solid #cbd5e1;
   border-radius: 7px;
-  font-size: 0.86rem;
-  color: #1e293b;
-  background: #fff;
+  font-size: 0.85rem;
 }
+.key-input-wrap { display: flex; gap: 4px; }
+.key-input-wrap input { flex: 1; min-width: 0; }
+.toggle-key-btn { border: 1px solid #cbd5e1; background: #f8fafc; border-radius: 7px; padding: 0 8px; cursor: pointer; }
+.form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
 
-.form-field input:focus,
-.ai-input:focus,
-.ai-select:focus,
-.ai-textarea:focus {
-  outline: none;
-  border-color: #667eea;
-  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.15);
-}
-
-.key-input-wrap {
-  display: flex;
-  gap: 4px;
-}
-
-.key-input-wrap input {
-  flex: 1;
-  min-width: 0;
-}
-
-.toggle-key-btn {
-  border: 1px solid #cbd5e1;
-  background: #f8fafc;
-  border-radius: 7px;
-  padding: 0 8px;
-  cursor: pointer;
-}
-
-.form-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
-}
-
-.model-select-row {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
+.model-select-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .ai-select,
 .ai-input {
   flex: 1;
   min-width: 220px;
-  padding: 8px 12px;
+  padding: 8px 11px;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   background: #fff;
-  color: #1e293b;
 }
 
-.scope-switch {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  font-size: 0.84rem;
-}
-
-.scope-option {
+.probe-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: #334155;
   cursor: pointer;
 }
 
-.scope-option.disabled {
+.scope-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.scope-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  border: 1.5px solid #e2e8f0;
+  background: #fff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.scope-card.active {
+  border-color: #667eea;
+  background: #f5f7ff;
+}
+.scope-card.disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
+.scope-card-title { font-size: 0.82rem; font-weight: 600; color: #0f172a; }
+.scope-card-desc { font-size: 0.73rem; color: #64748b; margin-top: 2px; line-height: 1.35; }
 
 .ai-textarea {
   width: 100%;
   box-sizing: border-box;
-  padding: 10px 12px;
+  padding: 9px 11px;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
-  font-size: 0.88rem;
+  font-size: 0.85rem;
   font-family: inherit;
   resize: vertical;
-  color: #1e293b;
   background: #fff;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
-/* Diff 预览样式 */
+/* 预览区样式 */
 .preview-summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
-  padding: 10px 14px;
+  padding: 9px 13px;
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
-  font-size: 0.86rem;
+  font-size: 0.84rem;
 }
 
-.summary-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+.summary-left { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.pill { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+.pill.ok { background: #dcfce7; color: #166534; }
+.pill.waf { background: #e0f2fe; color: #0369a1; }
+.pill.dead { background: #fee2e2; color: #b91c1c; }
+.pill.expired { background: #fef3c7; color: #b45309; }
+
+.suggestion-panel {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+  padding: 10px 14px;
 }
 
-.divider { color: #cbd5e1; }
-
-.empty-diff {
-  text-align: center;
-  padding: 40px 20px;
-  color: #475569;
-}
-
-.empty-diff-icon {
-  font-size: 2.2rem;
+.suggestion-header {
+  font-size: 0.84rem;
+  color: #92400e;
   margin-bottom: 8px;
 }
+
+.suggestion-list { display: flex; flex-direction: column; gap: 8px; }
+.suggestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid #fef3c7;
+  border-radius: 8px;
+  padding: 8px 10px;
+  flex-wrap: wrap;
+}
+.suggestion-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.suggestion-reason { font-size: 0.8rem; color: #475569; }
+.suggestion-cards { font-size: 0.76rem; color: #64748b; margin-top: 3px; }
+.created-tag { font-size: 0.78rem; color: #059669; font-weight: 600; }
+
+.preview-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 8px;
+}
+
+.preview-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #475569;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.preview-tab.active {
+  background: #4f46e5;
+  color: #fff;
+  border-color: #4f46e5;
+}
+.preview-tab.recycle-tab.active {
+  background: #dc2626;
+  border-color: #dc2626;
+}
+
+.tab-badge {
+  font-size: 0.74rem;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.08);
+}
+.preview-tab.active .tab-badge {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.empty-diff { text-align: center; padding: 34px 20px; color: #475569; }
+.empty-diff-icon { font-size: 2rem; margin-bottom: 6px; }
 
 .diff-table-wrap {
   border: 1px solid #e2e8f0;
   border-radius: 10px;
   overflow: auto;
-  max-height: 52vh;
+  max-height: 44vh;
 }
 
-.diff-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.84rem;
-}
-
+.diff-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
 .diff-table th,
 .diff-table td {
-  padding: 9px 10px;
+  padding: 8px 10px;
   border-bottom: 1px solid #e2e8f0;
   text-align: left;
   vertical-align: top;
 }
-
 .diff-table th {
   position: sticky;
   top: 0;
@@ -997,89 +1199,66 @@ function handleClose() {
   font-weight: 600;
   z-index: 1;
 }
+.diff-table tr.unselected { opacity: 0.48; background: #fafafa; }
 
-.diff-table tr.unselected {
-  opacity: 0.5;
-  background: #fafafa;
-}
+.col-check { width: 32px; text-align: center !important; }
+.col-card { width: 25%; }
+.col-cat { width: 21%; }
+.col-desc { width: 33%; }
+.col-reason { width: 17%; }
+.col-recycle-type { width: 13%; white-space: nowrap; }
 
-.col-check { width: 34px; text-align: center !important; }
-.col-card { width: 24%; }
-.col-cat { width: 24%; }
-.col-desc { width: 34%; }
-.col-reason { width: 15%; }
-
-.card-title-plain {
-  font-weight: 600;
-  color: #0f172a;
-}
-
-.card-url-sub {
+.card-title-plain { font-weight: 600; color: #0f172a; }
+.card-url-sub,
+.card-url-link {
+  display: block;
   font-size: 0.74rem;
-  color: #64748b;
-  max-width: 210px;
+  max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-top: 2px;
 }
+.card-url-sub { color: #64748b; }
+.card-url-link { color: #2563eb; text-decoration: none; }
+.card-url-link:hover { text-decoration: underline; }
 
 .diff-inline,
-.diff-stack {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-}
+.diff-stack { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.diff-old { color: #b91c1c; background: #fee2e2; padding: 1px 5px; border-radius: 4px; text-decoration: line-through; }
+.diff-new { color: #047857; background: #d1fae5; padding: 1px 6px; border-radius: 4px; font-weight: 500; }
+.diff-arrow { color: #64748b; font-weight: 600; }
 
-.diff-old {
-  color: #b91c1c;
-  background: #fee2e2;
-  padding: 1px 5px;
-  border-radius: 4px;
-  text-decoration: line-through;
-}
+.cat-badge { display: inline-block; padding: 2px 7px; border-radius: 5px; font-size: 0.76rem; }
+.cat-badge.old { background: #fee2e2; color: #991b1b; text-decoration: line-through; }
+.cat-badge.new { background: #dbeafe; color: #1d4ed8; font-weight: 600; }
 
-.diff-new {
-  color: #047857;
-  background: #d1fae5;
+.review-badge {
+  display: inline-block;
+  margin-bottom: 3px;
+  margin-right: 4px;
   padding: 1px 6px;
   border-radius: 4px;
-  font-weight: 500;
-}
-
-.diff-arrow {
-  color: #64748b;
+  font-size: 0.72rem;
   font-weight: 600;
+  background: #ffedd5;
+  color: #c2410c;
 }
 
-.cat-badge {
+.recycle-badge {
   display: inline-block;
-  padding: 2px 7px;
-  border-radius: 5px;
-  font-size: 0.78rem;
-}
-
-.cat-badge.old {
-  background: #fee2e2;
-  color: #991b1b;
-  text-decoration: line-through;
-}
-
-.cat-badge.new {
-  background: #dbeafe;
-  color: #1d4ed8;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.74rem;
   font-weight: 600;
 }
+.recycle-badge.dead_link { background: #fee2e2; color: #b91c1c; }
+.recycle-badge.domain_expired { background: #fef3c7; color: #b45309; }
+.recycle-badge.duplicate { background: #ede9fe; color: #6d28d9; }
 
-.unchanged-text {
-  color: #94a3b8;
-}
-
-.reason-text {
-  color: #475569;
-  font-size: 0.78rem;
-}
+.unchanged-text { color: #94a3b8; }
+.reason-text { color: #334155; font-size: 0.78rem; }
+.probe-sub { font-size: 0.73rem; color: #64748b; margin-top: 2px; }
 
 .ai-modal-footer {
   padding: 12px 20px;
@@ -1093,54 +1272,21 @@ function handleClose() {
 .ai-btn {
   border: none;
   border-radius: 8px;
-  padding: 8px 16px;
-  font-size: 0.88rem;
+  padding: 8px 15px;
+  font-size: 0.86rem;
   font-weight: 500;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: all 0.15s ease;
 }
-
-.ai-btn:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.ai-btn-sm {
-  padding: 5px 11px;
-  font-size: 0.8rem;
-}
-
-.ai-btn-primary {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  color: #fff;
-}
-
-.ai-btn-primary:hover:not(:disabled) {
-  filter: brightness(1.06);
-  transform: translateY(-1px);
-}
-
-.ai-btn-outline {
-  background: #fff;
-  color: #4f46e5;
-  border: 1px solid #c7d2fe;
-}
-
-.ai-btn-outline:hover:not(:disabled) {
-  background: #eef2ff;
-}
-
-.ai-btn-ghost {
-  background: #e2e8f0;
-  color: #334155;
-}
-
-.ai-btn-ghost:hover:not(:disabled) {
-  background: #cbd5e1;
-}
+.ai-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.ai-btn-sm { padding: 5px 11px; font-size: 0.8rem; }
+.ai-btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; }
+.ai-btn-primary:hover:not(:disabled) { filter: brightness(1.06); }
+.ai-btn-outline { background: #fff; color: #4f46e5; border: 1px solid #c7d2fe; }
+.ai-btn-outline:hover:not(:disabled) { background: #eef2ff; }
+.ai-btn-ghost { background: #e2e8f0; color: #334155; }
 
 .spinner {
   width: 14px;
@@ -1150,13 +1296,11 @@ function handleClose() {
   border-radius: 50%;
   animation: ai-spin 0.7s linear infinite;
 }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
 
-@keyframes ai-spin {
-  to { transform: rotate(360deg); }
-}
-
-@media (max-width: 680px) {
-  .form-grid {
+@media (max-width: 760px) {
+  .form-grid,
+  .scope-cards {
     grid-template-columns: 1fr;
   }
 }

@@ -75,7 +75,7 @@
           </select>
           <button class="btn btn-sm btn-primary" :disabled="batchBusy" @click="handleBatchMove">确认移动</button>
         </div>
-        <button class="btn btn-sm btn-danger" :disabled="batchBusy" @click="handleBatchDelete">批量删除</button>
+        <button class="btn btn-sm btn-danger" :disabled="batchBusy" @click="handleBatchDelete">批量移入回收站</button>
         <button class="btn btn-sm btn-ghost" @click="selectedIds = []">取消选择</button>
       </div>
 
@@ -174,7 +174,7 @@
 
               <!-- 操作 -->
               <td class="col-actions">
-                <button class="btn btn-danger btn-icon" @click="deleteCard(card.id)" title="删除卡片">
+                <button class="btn btn-danger btn-icon" @click="deleteCard(card.id)" title="移入回收站">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
                     <path d="M10 11v6M14 11v6"/>
@@ -466,6 +466,8 @@ async function deleteCard(id) {
   await apiDeleteCard(id);
   selectedIds.value = selectedIds.value.filter(item => item !== id);
   await loadCards();
+  window.dispatchEvent(new Event('recycle:updated'));
+  showToast('已移入回收站');
 }
 
 // 批量选择与操作
@@ -487,15 +489,16 @@ function toggleSelectCard(id) {
 
 async function handleBatchDelete() {
   if (!selectedIds.value.length) return;
-  if (!window.confirm(`确定要批量删除选中的 ${selectedIds.value.length} 张卡片吗？此操作不可撤销。`)) return;
+  if (!window.confirm(`确定要将选中的 ${selectedIds.value.length} 张卡片移入回收站吗？可在回收站中随时还原。`)) return;
   batchBusy.value = true;
   try {
-    const { data } = await batchDeleteCards(selectedIds.value);
+    const { data } = await batchDeleteCards(selectedIds.value, 'manual');
     selectedIds.value = [];
     await loadCards();
-    showToast(`已删除 ${data.deleted || 0} 张卡片`);
+    window.dispatchEvent(new Event('recycle:updated'));
+    showToast(`已将 ${data.recycled ?? data.deleted ?? 0} 张卡片移入回收站`);
   } catch (err) {
-    showToast(err.response?.data?.error || '批量删除失败', 'error');
+    showToast(err.response?.data?.error || '移入回收站失败', 'error');
   } finally {
     batchBusy.value = false;
   }
@@ -589,9 +592,18 @@ function onDragEnd() {
   dragOverIndex.value = -1;
 }
 
-async function onAiApplied(updatedCount) {
+async function onAiApplied(result) {
+  if (result?.menusChanged) {
+    const res = await getMenus();
+    menus.value = res.data || [];
+  }
   await loadCards();
-  showToast(`✨ AI 整理已应用，共更新 ${updatedCount} 张卡片`);
+  window.dispatchEvent(new Event('recycle:updated'));
+  const updated = typeof result === 'number' ? result : (result?.updated || 0);
+  const recycled = typeof result === 'object' ? (result?.recycled || 0) : 0;
+  if (updated || recycled) {
+    showToast(`✨ AI 整理已应用：更新 ${updated} 张，移入回收站 ${recycled} 张`);
+  }
 }
 </script>
 

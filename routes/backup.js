@@ -66,7 +66,7 @@ async function restoreBackup(backup) {
     for (const table of [...TABLES].reverse()) await run(`DELETE FROM ${table}`);
     for (const row of backup.tables.menus) await run('INSERT INTO menus (id, name, "order") VALUES (?, ?, ?)', [row.id, row.name, row.order || 0]);
     for (const row of backup.tables.sub_menus) await run('INSERT INTO sub_menus (id, parent_id, name, "order") VALUES (?, ?, ?, ?)', [row.id, row.parent_id, row.name, row.order || 0]);
-    for (const row of backup.tables.cards) await run('INSERT INTO cards (id, menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [row.id, row.menu_id, row.sub_menu_id, row.title, row.url, row.logo_url, row.custom_logo_path, row.desc, row.order || 0]);
+    for (const row of backup.tables.cards) await run('INSERT INTO cards (id, menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order", is_deleted, deleted_at, recycle_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [row.id, row.menu_id, row.sub_menu_id, row.title, row.url, row.logo_url, row.custom_logo_path, row.desc, row.order || 0, row.is_deleted ? 1 : 0, row.deleted_at || null, row.recycle_reason || null]);
     for (const row of backup.tables.users) await run('INSERT INTO users (id, username, password, current_login_at, current_login_ip, last_login_at, last_login_ip) VALUES (?, ?, ?, ?, ?, ?, ?)', [row.id, row.username, row.password, row.current_login_at, row.current_login_ip, row.last_login_at, row.last_login_ip]);
     for (const row of backup.tables.friends) await run('INSERT INTO friends (id, title, url, logo) VALUES (?, ?, ?, ?)', [row.id, row.title, row.url, row.logo]);
     if (backup.webdavConfig && typeof backup.webdavConfig === 'object') {

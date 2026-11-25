@@ -40,6 +40,10 @@
       <ul class="menu-list">
         <li :class="{active: page==='menu'}" @click="page='menu'; closeSider()">栏目管理</li>
         <li :class="{active: page==='card'}" @click="page='card'; closeSider()">卡片管理</li>
+        <li :class="['menu-with-badge', {active: page==='recycle'}]" @click="page='recycle'; closeSider()">
+          <span>回收站</span>
+          <span v-if="recycleCount > 0" class="sider-badge">{{ recycleCount > 99 ? '99+' : recycleCount }}</span>
+        </li>
         <li :class="{active: page==='friend'}" @click="page='friend'; closeSider()">友链管理</li>
         <li :class="{active: page==='user'}" @click="page='user'; closeSider()">用户管理</li>
       </ul>
@@ -79,6 +83,7 @@
         </div>
         <MenuManage v-if="page==='menu'" />
         <CardManage v-if="page==='card'" />
+        <RecycleBin v-if="page==='recycle'" />
         <FriendLinkManage v-if="page==='friend'" />
         <UserManage v-if="page==='user'" />
       </div>
@@ -91,13 +96,15 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
-import { login, logout as apiLogout, getLoginInfo } from '../api';
+import { login, logout as apiLogout, getLoginInfo, getRecycleCount } from '../api';
 import MenuManage from './admin/MenuManage.vue';
 import CardManage from './admin/CardManage.vue';
+import RecycleBin from './admin/RecycleBin.vue';
 import FriendLinkManage from './admin/FriendLinkManage.vue';
 import UserManage from './admin/UserManage.vue';
 
 const page = ref('welcome');
+const recycleCount = ref(0);
 const lastLoginTime = ref('');
 const lastLoginIp = ref('');
 const isLoggedIn = ref(false);
@@ -113,15 +120,27 @@ const pageTitle = computed(() => {
   switch (page.value) {
     case 'menu': return '栏目管理';
     case 'card': return '卡片管理';
+    case 'recycle': return '回收站';
     case 'friend': return '友链管理';
     case 'user': return '用户管理';
     default: return '';
   }
 });
 
+async function refreshRecycleCount() {
+  if (!isLoggedIn.value) return;
+  try {
+    const { data } = await getRecycleCount();
+    recycleCount.value = Number(data?.count || 0);
+  } catch {
+    // 忽略角标刷新失败
+  }
+}
+
 function resetSession() {
   isLoggedIn.value = false;
   page.value = 'welcome';
+  recycleCount.value = 0;
   lastLoginTime.value = '';
   lastLoginIp.value = '';
   password.value = '';
@@ -131,12 +150,14 @@ function resetSession() {
 
 onMounted(async () => {
   window.addEventListener('auth:unauthorized', resetSession);
+  window.addEventListener('recycle:updated', refreshRecycleCount);
   localStorage.removeItem('token');
   try {
     const { data } = await getLoginInfo();
     lastLoginTime.value = data.last_login_at || '';
     lastLoginIp.value = data.last_login_ip || '';
     isLoggedIn.value = true;
+    await refreshRecycleCount();
   } catch (error) {
     if (error.response?.status !== 401) loginError.value = '无法验证登录状态，请稍后重试';
   } finally {
@@ -144,7 +165,10 @@ onMounted(async () => {
   }
 });
 
-onBeforeUnmount(() => window.removeEventListener('auth:unauthorized', resetSession));
+onBeforeUnmount(() => {
+  window.removeEventListener('auth:unauthorized', resetSession);
+  window.removeEventListener('recycle:updated', refreshRecycleCount);
+});
 
 async function handleLogin() {
   if (loading.value) return;
@@ -164,6 +188,7 @@ async function handleLogin() {
     lastLoginTime.value = data.last_login_at || '';
     lastLoginIp.value = data.last_login_ip || '';
     password.value = '';
+    await refreshRecycleCount();
   } catch (error) {
     loginError.value = error.response?.data?.message || error.response?.data?.error || '登录失败，请检查用户名和密码';
   } finally {
@@ -359,6 +384,26 @@ function closeSider() {
   border-left: 4px solid #2566d8;
   color: #2566d8;
   font-weight: bold;
+}
+.menu-list li.menu-with-badge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 18px;
+}
+.sider-badge {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 .admin-main {
   flex: 1;
