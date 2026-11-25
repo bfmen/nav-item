@@ -355,7 +355,8 @@ router.get('/:menuId', (req, res) => {
 // 新增、修改、软删除卡片需认证
 router.post('/', auth, async (req, res) => {
   try {
-    const { menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, order } = req.body;
+    const { menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, description, order } = req.body;
+    const resolvedDesc = desc !== undefined ? desc : (description !== undefined ? description : '');
     const resolvedSubMenuId = sub_menu_id || null;
     let resolvedMenuId = menu_id || null;
     if (resolvedSubMenuId && !resolvedMenuId) {
@@ -371,7 +372,7 @@ router.post('/', auth, async (req, res) => {
     }
     const result = await run(
       'INSERT INTO cards (menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order", is_deleted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)',
-      [resolvedMenuId, resolvedSubMenuId, title, url, logo_url || '', custom_logo_path || null, desc || '', Number(resolvedOrder) || 0]
+      [resolvedMenuId, resolvedSubMenuId, title, url, logo_url || '', custom_logo_path || null, resolvedDesc || '', Number(resolvedOrder) || 0]
     );
     res.json({ id: result.lastID });
   } catch (err) {
@@ -381,7 +382,8 @@ router.post('/', auth, async (req, res) => {
 
 router.put('/:id', auth, async (req, res) => {
   try {
-    const { menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, order } = req.body;
+    const { menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, description, order } = req.body;
+    const resolvedDesc = desc !== undefined ? desc : (description !== undefined ? description : '');
     const resolvedSubMenuId = sub_menu_id || null;
     let resolvedMenuId = menu_id || null;
     if (resolvedSubMenuId) {
@@ -393,7 +395,7 @@ router.put('/:id', auth, async (req, res) => {
 
     const result = await run(
       'UPDATE cards SET menu_id=?, sub_menu_id=?, title=?, url=?, logo_url=?, custom_logo_path=?, desc=?, "order"=? WHERE id=?',
-      [resolvedMenuId, resolvedSubMenuId, title, url, logo_url ?? '', finalCustomLogoPath, desc ?? '', Number(order) || 0, req.params.id]
+      [resolvedMenuId, resolvedSubMenuId, title, url, logo_url ?? '', finalCustomLogoPath, resolvedDesc ?? '', Number(order) || 0, req.params.id]
     );
     res.json({ changed: result.changes });
   } catch (err) {

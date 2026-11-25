@@ -62,9 +62,9 @@ export const addAiConfig = (data) => axios.post(`${BASE}/ai/configs`, data);
 export const updateAiConfig = (id, data) => axios.put(`${BASE}/ai/configs/${id}`, data);
 export const activateAiConfig = (id) => axios.put(`${BASE}/ai/configs/${id}/activate`);
 export const deleteAiConfig = (id) => axios.delete(`${BASE}/ai/configs/${id}`);
-export const fetchAiModels = (data) => axios.post(`${BASE}/ai/models`, data);
-export const runAiOrganize = (data) => axios.post(`${BASE}/ai/organize`, data);
-export const applyAiOrganize = (payload) => axios.post(`${BASE}/ai/apply`, Array.isArray(payload) ? { updates: payload } : payload);
+export const fetchAiModels = (data) => axios.post(`${BASE}/ai/models`, data, { timeout: 30000 });
+export const runAiOrganize = (data) => axios.post(`${BASE}/ai/organize`, data, { timeout: 300000 });
+export const applyAiOrganize = (payload) => axios.post(`${BASE}/ai/apply`, Array.isArray(payload) ? { updates: payload } : payload, { timeout: 60000 });
 
 // 友链API
 export const getFriends = () => axios.get(`${BASE}/friends`);

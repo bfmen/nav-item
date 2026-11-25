@@ -97,12 +97,13 @@
               </div>
             </section>
 
-            <!-- 2. 模型选择 -->
+            <!-- 2. 模型选择（本次执行用，无需单独保存） -->
             <section class="ai-section">
               <div class="ai-section-head">
                 <div class="ai-section-title">
                   <span class="step-num">2</span>
                   <span>选择模型</span>
+                  <span class="section-sub-hint">（本次执行使用，选择或输入后无需保存即可直接执行）</span>
                 </div>
                 <button
                   type="button"
@@ -114,15 +115,21 @@
                 </button>
               </div>
               <div class="model-select-row">
-                <select v-if="fetchedModels.length" v-model="selectedModel" class="ai-select">
-                  <option value="" disabled>-- 从拉取的模型中选择 --</option>
+                <select
+                  v-if="fetchedModels.length"
+                  :value="fetchedModels.includes(selectedModel) ? selectedModel : ''"
+                  class="ai-select"
+                  @change="onDropdownModelChange"
+                >
+                  <option value="">-- 从拉取的模型中选择 --</option>
                   <option v-for="m in fetchedModels" :key="m" :value="m">{{ m }}</option>
                 </select>
                 <input
-                  v-model="selectedModel"
+                  :value="selectedModel"
                   type="text"
                   class="ai-input"
-                  :placeholder="fetchedModels.length ? '或直接手动输入模型名称' : '可点击右上角拉取模型列表，或直接手动输入模型名（如 gpt-4o-mini）'"
+                  :placeholder="fetchedModels.length ? '或直接手动输入任意模型名称' : '可点击右上角拉取模型列表，或直接手动输入模型名（如 gpt-4o-mini）'"
+                  @input="onManualModelInput"
                 />
               </div>
             </section>
@@ -443,6 +450,7 @@ const configForm = ref({ name: '', base_url: 'https://api.openai.com/v1', api_ke
 const fetchedModels = ref([]);
 const fetchingModels = ref(false);
 const selectedModel = ref('');
+const hasManuallySelectedModel = ref(false);
 const organizeScope = ref('smart');
 const enableProbe = ref(true);
 const customPrompt = ref('');
@@ -485,33 +493,79 @@ function clearNotice() {
   notice.value = { text: '', type: 'info' };
 }
 
+function formatRequestError(err, fallback) {
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+
+  let detail = '';
+  if (data && typeof data === 'object') {
+    detail = data.message || data.error?.message || (typeof data.error === 'string' ? data.error : '') || data.detail || '';
+  } else if (typeof data === 'string' && data.trim()) {
+    const plain = data
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (plain) detail = plain.slice(0, 220);
+  }
+
+  if (detail) {
+    return status && !detail.includes(String(status)) ? `[HTTP ${status}] ${detail}` : detail;
+  }
+
+  if (status === 504 || status === 502) {
+    return `${fallback}（HTTP ${status} 网关超时/代理断开，可尝试缩小整理范围或关闭测活后重试）`;
+  }
+  if (status) {
+    return `${fallback}（HTTP ${status}${err?.response?.statusText ? ` ${err.response.statusText}` : ''}）`;
+  }
+  if (err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message || '')) {
+    return `${fallback}（请求超时，当前卡片较多或中转接口响应过慢，请缩小范围或更换响应更快的模型）`;
+  }
+  if (err?.message) {
+    return `${fallback}（${err.message}${err.code ? ` / ${err.code}` : ''}）`;
+  }
+  return fallback;
+}
+
+function onDropdownModelChange(event) {
+  const val = event.target.value;
+  if (val) {
+    selectedModel.value = val;
+    hasManuallySelectedModel.value = true;
+  }
+}
+
+function onManualModelInput(event) {
+  selectedModel.value = event.target.value;
+  hasManuallySelectedModel.value = Boolean(event.target.value.trim());
+}
+
 watch(() => props.visible, async (val) => {
   if (val) {
     clearNotice();
     step.value = 'config';
     previewTab.value = 'updates';
     createdAnySubMenu.value = false;
+    hasManuallySelectedModel.value = false;
     if (!hasCurrentFilter.value && organizeScope.value === 'current') {
       organizeScope.value = 'smart';
     }
-    await loadConfigs();
+    await loadConfigs({ syncDefaultModel: true });
   }
 });
 
-watch(activeConfig, (cfg) => {
-  if (cfg) {
-    selectedModel.value = cfg.model || selectedModel.value || '';
-  }
-});
-
-async function loadConfigs() {
+async function loadConfigs({ syncDefaultModel = false } = {}) {
   try {
     const { data } = await getAiConfigs();
     configs.value = data.data || [];
-    const active = configs.value.find(c => c.is_active) || configs.value[0];
-    selectedModel.value = active ? (active.model || '') : '';
+    const active = configs.value.find(c => c.is_active) || configs.value[0] || null;
+    if (syncDefaultModel || !hasManuallySelectedModel.value) {
+      selectedModel.value = active?.model || '';
+    }
   } catch (err) {
-    setNotice(err.response?.data?.message || '读取 AI 接口配置失败', 'error');
+    setNotice(formatRequestError(err, '读取 AI 接口配置失败'), 'error');
   }
 }
 
@@ -549,6 +603,8 @@ async function handleSaveConfig() {
   savingConfig.value = true;
   clearNotice();
   try {
+    const wasEditingActive = editingConfigId.value && activeConfig.value?.id === editingConfigId.value;
+    const isCreatingNew = !editingConfigId.value;
     if (editingConfigId.value) {
       await updateAiConfig(editingConfigId.value, configForm.value);
       setNotice('AI 接口配置已更新', 'success');
@@ -559,9 +615,9 @@ async function handleSaveConfig() {
     showConfigForm.value = false;
     editingConfigId.value = null;
     fetchedModels.value = [];
-    await loadConfigs();
+    await loadConfigs({ syncDefaultModel: !hasManuallySelectedModel.value || (isCreatingNew && Boolean(configForm.value.model?.trim())) || (wasEditingActive && !hasManuallySelectedModel.value) });
   } catch (err) {
-    setNotice(err.response?.data?.message || '保存配置失败', 'error');
+    setNotice(formatRequestError(err, '保存配置失败'), 'error');
   } finally {
     savingConfig.value = false;
   }
@@ -573,9 +629,9 @@ async function handleActivate(cfg) {
   try {
     await activateAiConfig(cfg.id);
     fetchedModels.value = [];
-    await loadConfigs();
+    await loadConfigs({ syncDefaultModel: !hasManuallySelectedModel.value });
   } catch (err) {
-    setNotice(err.response?.data?.message || '切换接口失败', 'error');
+    setNotice(formatRequestError(err, '切换接口失败'), 'error');
   }
 }
 
@@ -586,10 +642,10 @@ async function handleDeleteConfig(cfg) {
     await deleteAiConfig(cfg.id);
     if (editingConfigId.value === cfg.id) cancelConfigForm();
     fetchedModels.value = [];
-    await loadConfigs();
+    await loadConfigs({ syncDefaultModel: !hasManuallySelectedModel.value });
     setNotice('配置已删除', 'success');
   } catch (err) {
-    setNotice(err.response?.data?.message || '删除配置失败', 'error');
+    setNotice(formatRequestError(err, '删除配置失败'), 'error');
   }
 }
 
@@ -604,16 +660,15 @@ async function handleFetchModels() {
     const { data } = await fetchAiModels({ config_id: activeConfig.value.id });
     fetchedModels.value = data.models || [];
     if (fetchedModels.value.length) {
-      if (!selectedModel.value || !fetchedModels.value.includes(selectedModel.value)) {
-        const preferred = fetchedModels.value.find(m => /gpt-4o-mini|gpt-4o|deepseek-chat|claude-3-5|gemini-2/i.test(m));
-        selectedModel.value = preferred || fetchedModels.value[0];
+      if (!selectedModel.value.trim()) {
+        selectedModel.value = fetchedModels.value[0];
       }
       setNotice(`成功拉取 ${fetchedModels.value.length} 个可用模型`, 'success');
     } else {
       setNotice('接口返回了空的模型列表，你可以直接在右侧手动输入模型名称', 'info');
     }
   } catch (err) {
-    setNotice(err.response?.data?.message || '拉取模型列表失败', 'error');
+    setNotice(formatRequestError(err, '拉取模型列表失败'), 'error');
   } finally {
     fetchingModels.value = false;
   }
@@ -659,7 +714,7 @@ async function handleOrganize() {
     previewTab.value = !diffUpdates.value.length && diffRecycles.value.length ? 'recycles' : 'updates';
     step.value = 'preview';
   } catch (err) {
-    setNotice(err.response?.data?.message || 'AI 智能整理执行失败', 'error');
+    setNotice(formatRequestError(err, 'AI 智能整理执行失败'), 'error');
   } finally {
     organizing.value = false;
   }
@@ -715,7 +770,7 @@ async function handleConfirmCreateSubMenu(sug, idx) {
     }
     setNotice(`已创建子菜单「${newCategoryLabel}」并更新预览，请点击下方「应用更改」完成归类`, 'success');
   } catch (err) {
-    setNotice(err.response?.data?.error || '创建子菜单失败', 'error');
+    setNotice(formatRequestError(err, '创建子菜单失败'), 'error');
   } finally {
     creatingSubIndex.value = -1;
   }
@@ -778,7 +833,7 @@ async function handleApply() {
     });
     emit('close');
   } catch (err) {
-    setNotice(err.response?.data?.message || '应用更改失败', 'error');
+    setNotice(formatRequestError(err, '应用更改失败'), 'error');
   } finally {
     applying.value = false;
   }
@@ -867,9 +922,17 @@ function handleClose() {
 }
 
 .ai-notice {
-  padding: 9px 14px;
+  padding: 10px 14px;
   border-radius: 8px;
   font-size: 0.85rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.section-sub-hint {
+  font-size: 0.76rem;
+  font-weight: 400;
+  color: #64748b;
 }
 .ai-notice.success { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
 .ai-notice.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }

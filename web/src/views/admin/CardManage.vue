@@ -3,9 +3,10 @@
     <!-- 紧凑单行功能工具栏 -->
     <div class="card-header">
       <div class="card-add">
-        <input v-model="newCardTitle" placeholder="卡片标题" class="input narrow" @keyup.enter="addCard" />
-        <input v-model="newCardUrl" placeholder="卡片网址 (https://...)" class="input wide" @keyup.enter="addCard" />
-        <input v-model="newCardLogo" placeholder="Logo链接(可选)" class="input medium" @keyup.enter="addCard" />
+        <input v-model="newCardTitle" placeholder="卡片标题" class="input title-input" @keyup.enter="addCard" />
+        <input v-model="newCardUrl" placeholder="卡片网址 (https://...)" class="input url-input" @keyup.enter="addCard" />
+        <input v-model="newCardLogo" placeholder="Logo链接(可选)" class="input logo-input" @keyup.enter="addCard" />
+        <input v-model="newCardDesc" placeholder="描述(可选)" class="input desc-input" @keyup.enter="addCard" />
         <button class="btn btn-add" @click="addCard">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
             <path d="M12 5v14M5 12h14"/>
@@ -255,6 +256,7 @@ const searchKeyword = ref('');
 const newCardTitle = ref('');
 const newCardUrl = ref('');
 const newCardLogo = ref('');
+const newCardDesc = ref('');
 
 const selectedIds = ref([]);
 const batchTargetMenuId = ref('');
@@ -406,11 +408,14 @@ async function addCard() {
     sub_menu_id: targetSubMenuId,
     title: newCardTitle.value.trim(),
     url: newCardUrl.value.trim(),
-    logo_url: newCardLogo.value.trim()
+    logo_url: newCardLogo.value.trim(),
+    desc: newCardDesc.value.trim(),
+    description: newCardDesc.value.trim()
   });
   newCardTitle.value = '';
   newCardUrl.value = '';
   newCardLogo.value = '';
+  newCardDesc.value = '';
   await loadCards();
   showToast('卡片已添加');
 }
@@ -621,7 +626,7 @@ async function onAiApplied(result) {
 .card-header {
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   border-radius: 12px;
-  padding: 10px 16px;
+  padding: 10px 14px;
   color: white;
   box-shadow: 0 4px 16px rgba(102, 126, 234, 0.24);
   width: 100%;
@@ -629,16 +634,16 @@ async function onAiApplied(result) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  flex-wrap: wrap;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
 
 .card-add {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   flex: 1;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   min-width: 0;
 }
 
@@ -650,14 +655,15 @@ async function onAiApplied(result) {
 }
 
 .input {
-  padding: 7px 11px;
+  padding: 6px 10px;
   border-radius: 7px;
   border: 1px solid rgba(255, 255, 255, 0.28);
   background: rgba(255, 255, 255, 0.96);
   color: #1e293b;
-  font-size: 0.86rem;
+  font-size: 0.84rem;
   height: 34px;
   box-sizing: border-box;
+  min-width: 0;
   transition: all 0.2s ease;
 }
 
@@ -667,9 +673,10 @@ async function onAiApplied(result) {
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35);
 }
 
-.input.narrow { width: 145px; }
-.input.medium { width: 175px; }
-.input.wide { flex: 1; min-width: 180px; max-width: 280px; }
+.input.title-input { flex: 0.9 1 115px; max-width: 155px; }
+.input.url-input { flex: 1.5 1 165px; max-width: 240px; }
+.input.logo-input { flex: 1 1 130px; max-width: 185px; }
+.input.desc-input { flex: 1.1 1 130px; max-width: 195px; }
 
 .card-card {
   background: white;
@@ -1115,14 +1122,30 @@ async function onAiApplied(result) {
   border-radius: 6px;
 }
 
+@media (max-width: 1024px) {
+  .card-header,
+  .card-add {
+    flex-wrap: wrap;
+  }
+  .input.title-input,
+  .input.url-input,
+  .input.logo-input,
+  .input.desc-input {
+    flex: 1 1 160px;
+    max-width: none;
+  }
+}
+
 @media (max-width: 768px) {
   .card-manage {
     width: 95%;
   }
-  .input.narrow,
-  .input.medium,
-  .input.wide {
+  .input.title-input,
+  .input.url-input,
+  .input.logo-input,
+  .input.desc-input {
     width: 100%;
+    flex: 1 1 100%;
     max-width: none;
   }
   .header-right {

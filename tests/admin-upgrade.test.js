@@ -116,6 +116,63 @@ test('AI URL 归一化、模型列表与 HTML Title 提取及测活判定', asyn
   assert.equal(deadProbe.verdict, 'suspected_dead_link');
 });
 
+test('第三方中转站响应兼容、JSON 容错解析与参数自动降级重试', async () => {
+  // 1. 含思考块、尾部多余花括号与尾随逗号的 JSON 容错
+  const messy = '<think>分析中</think>好的，结果如下：\n{"updates":[{"id":1,"title":"YouTube",}],"recycles":[]}\n注：{} 为空对象';
+  const parsed = aiModule.parseAiJson(messy);
+  assert.equal(parsed.updates[0].title, 'YouTube');
+
+  // 2. 多模态块数组 content 兼容 & HTTP 200 内嵌 error 暴露
+  const blockRes = aiModule.extractChatContent({
+    choices: [{ message: { content: [{ type: 'text', text: '{"updates":[]}' }] }, finish_reason: 'stop' }]
+  });
+  assert.equal(blockRes.content, '{"updates":[]}');
+  assert.throws(
+    () => aiModule.extractChatContent({ error: { message: 'insufficient_quota' } }),
+    /insufficient_quota/
+  );
+
+  // 3. 强制返回 SSE 流的中转站文本重建
+  const sseText = [
+    'data: {"choices":[{"delta":{"content":"{\\"updates\\":"}}]}',
+    'data: {"choices":[{"delta":{"content":"[]}"},"finish_reason":"stop"}]}',
+    'data: [DONE]'
+  ].join('\n');
+  const sseParsed = aiModule.parseSseStreamText(sseText);
+  assert.equal(sseParsed.content, '{"updates":[]}');
+
+  // 4. 中转站拒绝 temperature 参数返回 400 时自动降级为最小参数重试成功
+  const seenBodies = [];
+  const fallbackResult = await aiModule.callChatCompletionsWithFallback(
+    async (_url, opts) => {
+      const body = JSON.parse(opts.body);
+      seenBodies.push(body);
+      if ('temperature' in body) {
+        return {
+          ok: false,
+          status: 400,
+          text: async () => JSON.stringify({ error: { message: 'Unsupported parameter: temperature' } })
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ choices: [{ message: { content: '{"updates":[],"recycles":[]}' } }] })
+      };
+    },
+    ['https://relay.test/v1/chat/completions'],
+    {
+      apiKey: 'sk-test',
+      model: 'custom-strict-model',
+      messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }]
+    }
+  );
+  assert.equal(seenBodies.length, 2);
+  assert.equal(seenBodies[0].temperature, 0.2);
+  assert.equal('temperature' in seenBodies[1], false);
+  assert.equal(fallbackResult.choices[0].message.content, '{"updates":[],"recycles":[]}');
+});
+
 test('AI 整理方案计算：防硬塞 needs_review、回收站分离与 >=3 张卡片才允许建议新增子菜单', () => {
   const menus = [
     { id: 1, name: 'Home' },
@@ -263,11 +320,12 @@ test('拖拽排序、分类回收站完整流转、后端测活与 AI 智能整�
     assert.equal((await api('/api/menus/submenus/reorder', 'PUT', { items: [{ id: sm2, order: 1 }, { id: sm1, order: 2 }] })).status, 200);
     assert.equal((await api('/api/cards/reorder', 'PUT', { items: [{ id: c3, order: 1 }, { id: c1, order: 2 }, { id: c2, order: 3 }] })).status, 200);
 
-    // 2. AI 配置 + 拉取模型 + 测活与整理预览
+    // 2. AI 配置 + 拉取模型 + 测活与整理预览（且临时切换模型不覆盖接口已保存的默认模型）
     const createdCfg = await (await api('/api/ai/configs', 'POST', {
       name: '中转接口',
       base_url: 'https://relay.test/v1',
-      api_key: 'sk-test-123'
+      api_key: 'sk-test-123',
+      model: 'saved-default-model'
     })).json();
     const modelsRes = await (await api('/api/ai/models', 'POST', { config_id: createdCfg.data.id })).json();
     assert.deepEqual(modelsRes.models, ['deepseek-chat', 'gpt-4o-mini']);
@@ -282,6 +340,21 @@ test('拖拽排序、分类回收站完整流转、后端测活与 AI 智能整�
     assert.equal(organizeRes.probe_stats.suspected_dead, 1);
     assert.equal(organizeRes.updates.length, 2);
     assert.equal(organizeRes.recycles.length, 2);
+
+    // 验证已保存的默认模型未被临时执行模型覆盖
+    const configsAfter = await (await api('/api/ai/configs')).json();
+    assert.equal(configsAfter.data[0].model, 'saved-default-model');
+
+    // 验证新增卡片接口同时支持 description 与 desc 字段
+    const addedWithDescription = await (await api('/api/cards', 'POST', {
+      menu_id: m1,
+      title: 'DescTest',
+      url: 'https://desctest.example',
+      description: '通过 description 传入的描述'
+    })).json();
+    const addedRows = await all(db, 'SELECT desc FROM cards WHERE id = ?', [addedWithDescription.id]);
+    assert.equal(addedRows[0].desc, '通过 description 传入的描述');
+    await run(db, 'DELETE FROM cards WHERE id = ?', [addedWithDescription.id]);
 
     // 3. 应用更改（同时更新 2 张 + 移入回收站 2 张）
     const applyRes = await (await api('/api/ai/apply', 'POST', {

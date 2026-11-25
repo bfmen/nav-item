@@ -19,9 +19,11 @@ const DEFAULT_ORGANIZE_PROMPT = [
   '   - 确认与其他卡片重复指向同一站点功能页（保留信息最完整的一张，将其余重复项移入回收站）标为 duplicate 放入 recycles。'
 ].join('\n');
 
-const BATCH_SIZE = 45;
-const PROBE_CONCURRENCY = 8;
-const PROBE_TIMEOUT_MS = 8000;
+const BATCH_SIZE = 40;
+const BATCH_CONCURRENCY = 2;
+const PROBE_CONCURRENCY = 16;
+const PROBE_TIMEOUT_MS = 5000;
+const AI_REQUEST_TIMEOUT_MS = 180000;
 const PROBE_MAX_HTML_BYTES = 16384;
 
 const EXPIRED_DOMAIN_PATTERNS = [
@@ -126,45 +128,199 @@ function extractModels(payload) {
   return [...new Set(names)].sort((a, b) => a.localeCompare(b));
 }
 
+function repairTrailingCommas(text) {
+  return String(text || '').replace(/,\s*([}\]])/g, '$1');
+}
+
+function tryJsonParse(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    try {
+      return JSON.parse(repairTrailingCommas(trimmed));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function extractBalancedJsonCandidate(text, openChar, closeChar) {
+  const start = text.indexOf(openChar);
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === openChar) {
+      depth++;
+    } else if (ch === closeChar) {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
 function parseAiJson(rawText) {
   if (rawText && typeof rawText === 'object') return rawText;
   let text = String(rawText || '').trim();
   if (!text) throw new Error('AI 返回内容为空');
 
+  // 移除推理模型输出的 <think>...</think> 块（兼容未闭合情况）
   text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  if (/^<think>/i.test(text) && !/<\/think>/i.test(text)) {
+    const braceIdx = text.indexOf('{');
+    if (braceIdx !== -1) text = text.slice(braceIdx);
+  }
 
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced && fenced[1]) {
+  // 1. 提取所有 ```json ... ``` 或 ``` ... ``` 代码块尝试解析
+  const fenceMatches = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+  for (const match of fenceMatches) {
+    const parsedFence = tryJsonParse(match[1]);
+    if (parsedFence !== null) return parsedFence;
+  }
+
+  // 2. 直接解析整段文本
+  const direct = tryJsonParse(text);
+  if (direct !== null) return direct;
+
+  // 3. 精准提取首个括号配平的 {...} 或 [...]
+  const balancedObj = extractBalancedJsonCandidate(text, '{', '}');
+  if (balancedObj) {
+    const parsedObj = tryJsonParse(balancedObj);
+    if (parsedObj !== null) return parsedObj;
+  }
+  const balancedArr = extractBalancedJsonCandidate(text, '[', ']');
+  if (balancedArr) {
+    const parsedArr = tryJsonParse(balancedArr);
+    if (parsedArr !== null) return parsedArr;
+  }
+
+  // 4. 回退首尾括号切片
+  const firstObj = text.indexOf('{');
+  const lastObj = text.lastIndexOf('}');
+  if (firstObj !== -1 && lastObj > firstObj) {
+    const fallbackObj = tryJsonParse(text.slice(firstObj, lastObj + 1));
+    if (fallbackObj !== null) return fallbackObj;
+  }
+
+  const preview = text.replace(/\s+/g, ' ').slice(0, 160);
+  throw new Error(`无法解析 AI 返回的 JSON 内容（返回片段：${preview}${text.length > 160 ? '...' : ''}）`);
+}
+
+function parseSseStreamText(rawText) {
+  const lines = String(rawText || '').split(/\r?\n/);
+  let combined = '';
+  let finishReason = '';
+  let parsedChunks = 0;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) continue;
+    const dataPart = line.slice(5).trim();
+    if (!dataPart || dataPart === '[DONE]') continue;
     try {
-      return JSON.parse(fenced[1].trim());
+      const chunk = JSON.parse(dataPart);
+      parsedChunks++;
+      const choice = chunk?.choices?.[0];
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '';
+      if (typeof delta === 'string') combined += delta;
+      else if (Array.isArray(delta)) {
+        combined += delta.map(part => (typeof part === 'string' ? part : part?.text || '')).join('');
+      }
     } catch {
-      // 回退到通用括号提取
+      // 忽略非 JSON SSE 行
     }
   }
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    const firstObj = text.indexOf('{');
-    const lastObj = text.lastIndexOf('}');
-    if (firstObj !== -1 && lastObj > firstObj) {
-      try {
-        return JSON.parse(text.slice(firstObj, lastObj + 1));
-      } catch {
-        // 继续尝试数组
-      }
-    }
-    const firstArr = text.indexOf('[');
-    const lastArr = text.lastIndexOf(']');
-    if (firstArr !== -1 && lastArr > firstArr) {
-      try {
-        return JSON.parse(text.slice(firstArr, lastArr + 1));
-      } catch {
-        // 解析失败
-      }
-    }
-    throw new Error('无法解析 AI 返回的 JSON 结果，请重试或更换模型');
+  return parsedChunks > 0 ? { content: combined, finishReason } : null;
+}
+
+function extractTextFromContentField(field) {
+  if (typeof field === 'string') return field;
+  if (Array.isArray(field)) {
+    return field
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object') {
+          return part.text || part.content || part.value || '';
+        }
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
   }
+  if (field && typeof field === 'object' && typeof field.text === 'string') {
+    return field.text;
+  }
+  return '';
+}
+
+function extractChatContent(completion) {
+  if (!completion || typeof completion !== 'object') {
+    throw new Error('AI 接口响应为空或格式无效');
+  }
+
+  // 部分第三方中转站会在 HTTP 200 中返回 error / code!=0
+  if (completion.error) {
+    const errMsg = typeof completion.error === 'string'
+      ? completion.error
+      : (completion.error.message || JSON.stringify(completion.error).slice(0, 200));
+    throw new Error(`中转接口返回错误：${errMsg}`);
+  }
+  if (!Array.isArray(completion.choices) && completion.code !== undefined && Number(completion.code) !== 0 && Number(completion.code) !== 200) {
+    throw new Error(`中转接口返回错误 (code=${completion.code})：${completion.msg || completion.message || '未知错误'}`);
+  }
+
+  const choice = Array.isArray(completion.choices) ? completion.choices[0] : null;
+  const finishReason = choice?.finish_reason || completion.stop_reason || '';
+
+  let content = '';
+  if (choice) {
+    content = extractTextFromContentField(choice?.message?.content)
+      || extractTextFromContentField(choice?.text)
+      || extractTextFromContentField(choice?.delta?.content);
+  }
+  if (!content && typeof completion.output_text === 'string') {
+    content = completion.output_text;
+  }
+  if (!content && Array.isArray(completion.output)) {
+    content = completion.output
+      .map(item => extractTextFromContentField(item?.content))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (!content && Array.isArray(completion.content)) {
+    content = extractTextFromContentField(completion.content);
+  }
+  if (!content && typeof completion.result === 'string') {
+    content = completion.result;
+  }
+
+  if (!content || !content.trim()) {
+    const keys = Object.keys(completion).slice(0, 6).join(', ');
+    throw new Error(`AI 返回内容为空${finishReason ? ` (finish_reason=${finishReason})` : ''}，响应字段：[${keys}]`);
+  }
+
+  return { content, finishReason };
 }
 
 function decodeHtmlEntities(value) {
@@ -680,15 +836,41 @@ async function fetchWithTimeout(fetchImpl, url, options, timeoutMs) {
     return await fetchImpl(url, { ...options, signal: controller.signal });
   } catch (err) {
     if (err?.name === 'AbortError') {
-      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)}秒）`);
+      const timeoutErr = new Error(`上游接口请求超时（超过 ${Math.round(timeoutMs / 1000)} 秒未响应）`);
+      timeoutErr.code = 'ETIMEDOUT';
+      throw timeoutErr;
     }
-    throw err;
+    const causeMsg = err?.cause?.code || err?.cause?.message || '';
+    const detail = causeMsg ? `${err.message} (${causeMsg})` : (err?.message || '网络连接失败');
+    const netErr = new Error(`网络请求失败：${detail}`);
+    netErr.code = err?.cause?.code || err?.code || 'NETWORK_ERROR';
+    throw netErr;
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function requestOpenAiJson(fetchImpl, candidateUrls, { method = 'GET', apiKey, body, timeoutMs = 20000 }) {
+function extractUpstreamErrorMessage(parsed, rawText, status) {
+  const candidates = [
+    parsed?.error?.message,
+    typeof parsed?.error === 'string' ? parsed.error : '',
+    parsed?.message,
+    parsed?.msg,
+    parsed?.detail
+  ].filter(Boolean);
+
+  if (candidates.length) return String(candidates[0]).trim().slice(0, 320);
+
+  const plain = String(rawText || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return plain ? plain.slice(0, 240) : `HTTP ${status}`;
+}
+
+async function requestOpenAiJson(fetchImpl, candidateUrls, { method = 'GET', apiKey, body, timeoutMs = 25000 }) {
   const headers = {
     Accept: 'application/json',
     ...(body ? { 'Content-Type': 'application/json' } : {}),
@@ -713,12 +895,28 @@ async function requestOpenAiJson(fetchImpl, candidateUrls, { method = 'GET', api
     }
 
     if (response.ok) {
-      if (parsed === null) throw new Error('上游接口返回的不是有效的 JSON 数据');
-      return parsed;
+      if (parsed !== null) return parsed;
+      // 兼容部分中转站无视 stream:false 强制返回 SSE 文本流
+      const sseResult = parseSseStreamText(text);
+      if (sseResult && sseResult.content) {
+        return {
+          choices: [{
+            message: { content: sseResult.content },
+            finish_reason: sseResult.finishReason || 'stop'
+          }]
+        };
+      }
+      const preview = String(text || '').replace(/\s+/g, ' ').slice(0, 160);
+      const invalidErr = new Error(`上游接口返回了非 JSON 内容（HTTP ${response.status}）：${preview || '空响应'}`);
+      invalidErr.status = response.status;
+      throw invalidErr;
     }
 
-    const upstreamMessage = parsed?.error?.message || parsed?.message || text.slice(0, 200) || `HTTP ${response.status}`;
-    lastError = new Error(`接口请求失败 (${response.status}): ${upstreamMessage}`);
+    const upstreamMessage = extractUpstreamErrorMessage(parsed, text, response.status);
+    lastError = new Error(`HTTP ${response.status}: ${upstreamMessage}`);
+    lastError.status = response.status;
+    lastError.upstreamMessage = upstreamMessage;
+    lastError.url = url;
 
     if (response.status === 404 && i < candidateUrls.length - 1) {
       continue;
@@ -726,6 +924,80 @@ async function requestOpenAiJson(fetchImpl, candidateUrls, { method = 'GET', api
     throw lastError;
   }
   throw lastError || new Error('接口请求失败');
+}
+
+function modelDisallowsTemperature(model) {
+  return /^(?:o[134](?:-|$)|gpt-5|deepseek-r1|qwq)/i.test(String(model || '').trim());
+}
+
+function mergeSystemIntoUserMessages(messages) {
+  const systemParts = messages.filter(m => m.role === 'system').map(m => m.content);
+  const userParts = messages.filter(m => m.role !== 'system').map(m => m.content);
+  return [{
+    role: 'user',
+    content: `${systemParts.join('\n\n')}\n\n${userParts.join('\n\n')}`.trim()
+  }];
+}
+
+async function callChatCompletionsWithFallback(fetchImpl, candidateUrls, { apiKey, model, messages, timeoutMs = AI_REQUEST_TIMEOUT_MS }) {
+  const includeTemp = !modelDisallowsTemperature(model);
+  const primaryBody = {
+    model,
+    messages,
+    stream: false,
+    ...(includeTemp ? { temperature: 0.2 } : {})
+  };
+
+  try {
+    return await requestOpenAiJson(fetchImpl, candidateUrls, {
+      method: 'POST',
+      apiKey,
+      timeoutMs,
+      body: primaryBody
+    });
+  } catch (firstErr) {
+    const status = Number(firstErr?.status || 0);
+    const msgLower = String(firstErr?.message || '').toLowerCase();
+    const shouldFallbackMinimal =
+      (status === 400 || status === 422 || status === 500) &&
+      (
+        includeTemp ||
+        /temperature|stream|response_format|unsupported|invalid|parameter|param|system|role|unknown/i.test(msgLower)
+      );
+
+    if (!shouldFallbackMinimal) {
+      throw firstErr;
+    }
+
+    const systemRejected = /system/i.test(msgLower) && /role|not supported|unsupported|invalid/i.test(msgLower);
+    const fallbackMessages = systemRejected ? mergeSystemIntoUserMessages(messages) : messages;
+
+    try {
+      return await requestOpenAiJson(fetchImpl, candidateUrls, {
+        method: 'POST',
+        apiKey,
+        timeoutMs,
+        body: {
+          model,
+          messages: fallbackMessages
+        }
+      });
+    } catch (secondErr) {
+      const secondMsg = String(secondErr?.message || '').toLowerCase();
+      if (!systemRejected && /system/i.test(secondMsg) && /role|not supported|unsupported|invalid/i.test(secondMsg)) {
+        return await requestOpenAiJson(fetchImpl, candidateUrls, {
+          method: 'POST',
+          apiKey,
+          timeoutMs,
+          body: {
+            model,
+            messages: mergeSystemIntoUserMessages(messages)
+          }
+        });
+      }
+      throw secondErr;
+    }
+  }
 }
 
 function buildOrganizeMessages(menusTree, cardsBatch, customPrompt, probeMap, duplicateHints) {
@@ -1061,34 +1333,59 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
       }
 
       const candidateUrls = buildChatCandidateUrls(baseUrl);
+      const batches = [];
+      for (let start = 0; start < aiCards.length; start += BATCH_SIZE) {
+        batches.push(aiCards.slice(start, start + BATCH_SIZE));
+      }
+
+      const batchPlans = new Array(batches.length);
+      let nextBatchIndex = 0;
+
+      async function runBatchWorker() {
+        while (nextBatchIndex < batches.length) {
+          const currentIdx = nextBatchIndex++;
+          const batch = batches[currentIdx];
+          const messages = buildOrganizeMessages(menusTree, batch, customPrompt, probeMap, duplicateHints);
+          try {
+            const completion = await callChatCompletionsWithFallback(fetchImpl, candidateUrls, {
+              apiKey,
+              model,
+              messages,
+              timeoutMs: AI_REQUEST_TIMEOUT_MS
+            });
+            const { content, finishReason } = extractChatContent(completion);
+            let parsed;
+            try {
+              parsed = parseAiJson(content);
+            } catch (parseErr) {
+              if (finishReason === 'length') {
+                throw new Error(`AI 输出因长度限制被截断 (finish_reason=length)，请缩小整理范围或更换输出更长的模型`);
+              }
+              throw parseErr;
+            }
+            batchPlans[currentIdx] = computeOrganizePlan(batch, parsed, menus, subMenus, probeMap);
+          } catch (batchErr) {
+            const prefix = batches.length > 1 ? `[第 ${currentIdx + 1}/${batches.length} 批] ` : '';
+            const wrapped = new Error(`${prefix}${batchErr.message}`);
+            wrapped.status = batchErr.status;
+            throw wrapped;
+          }
+        }
+      }
+
+      if (batches.length > 0) {
+        const workerCount = Math.min(BATCH_CONCURRENCY, batches.length);
+        await Promise.all(Array.from({ length: workerCount }, () => runBatchWorker()));
+      }
+
       const aggregatedUpdates = [];
       const aggregatedRecycles = [];
       const aggregatedSuggestions = [];
-
-      for (let start = 0; start < aiCards.length; start += BATCH_SIZE) {
-        const batch = aiCards.slice(start, start + BATCH_SIZE);
-        const messages = buildOrganizeMessages(menusTree, batch, customPrompt, probeMap, duplicateHints);
-        const completion = await requestOpenAiJson(fetchImpl, candidateUrls, {
-          method: 'POST',
-          apiKey,
-          timeoutMs: 120000,
-          body: {
-            model,
-            temperature: 0.2,
-            messages
-          }
-        });
-
-        const content = completion?.choices?.[0]?.message?.content;
-        const parsed = parseAiJson(content);
-        const plan = computeOrganizePlan(batch, parsed, menus, subMenus, probeMap);
+      for (const plan of batchPlans) {
+        if (!plan) continue;
         aggregatedUpdates.push(...plan.updates);
         aggregatedRecycles.push(...plan.recycles);
         aggregatedSuggestions.push(...plan.suggested_sub_menus);
-      }
-
-      if (config && model && model !== config.model) {
-        await run(`UPDATE ai_configs SET model = ?, updated_at = datetime('now') WHERE id = ?`, [model, config.id]).catch(() => {});
       }
 
       res.json({
@@ -1103,7 +1400,12 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
         used_default_prompt: !customPrompt
       });
     } catch (err) {
-      res.status(400).json({ message: `AI 智能整理失败：${err.message}` });
+      const upstreamStatus = Number(err?.status || 0);
+      res.status(400).json({
+        message: `AI 智能整理失败：${err.message}`,
+        detail: err.message,
+        upstream_status: upstreamStatus || undefined
+      });
     }
   });
 
@@ -1200,6 +1502,9 @@ defaultRouter.extractHtmlTitle = extractHtmlTitle;
 defaultRouter.probeUrl = probeUrl;
 defaultRouter.detectDuplicateHints = detectDuplicateHints;
 defaultRouter.parseAiJson = parseAiJson;
+defaultRouter.parseSseStreamText = parseSseStreamText;
+defaultRouter.extractChatContent = extractChatContent;
+defaultRouter.callChatCompletionsWithFallback = callChatCompletionsWithFallback;
 defaultRouter.computeOrganizePlan = computeOrganizePlan;
 defaultRouter.computeOrganizeDiff = computeOrganizeDiff;
 defaultRouter.DEFAULT_ORGANIZE_PROMPT = DEFAULT_ORGANIZE_PROMPT;
