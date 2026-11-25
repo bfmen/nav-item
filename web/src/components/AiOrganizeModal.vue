@@ -16,16 +16,44 @@
             {{ notice.text }}
           </div>
 
-          <!-- 阶段一：配置与执行 -->
+          <!-- 异步任务进度条面板 -->
+          <div v-if="organizing" class="task-progress-panel">
+            <div class="progress-top">
+              <div class="progress-status">
+                <span class="spinner dark"></span>
+                <span>{{ taskProgress.message || '正在后台执行测活与 AI 整理...' }}</span>
+              </div>
+              <div class="progress-right">
+                <span class="progress-pct">{{ taskProgress.progress }}%</span>
+                <button type="button" class="ai-btn ai-btn-xs ai-btn-danger-outline" @click="handleCancelTask">
+                  取消任务
+                </button>
+              </div>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" :style="{ width: `${Math.max(4, taskProgress.progress)}%` }"></div>
+            </div>
+            <div class="progress-meta">
+              <span v-if="taskProgress.probed_total > 0">
+                测活进度：{{ taskProgress.probed_done }}/{{ taskProgress.probed_total }}
+              </span>
+              <span v-if="taskProgress.batch_total > 0">
+                AI 整理批次：{{ taskProgress.batch_done }}/{{ taskProgress.batch_total }}
+              </span>
+              <span>异步任务模式 · 每 2 秒自动同步进度</span>
+            </div>
+          </div>
+
+          <!-- 阶段一：配置与执行（精简为 2 步） -->
           <div v-if="step === 'config'" class="ai-config-view">
-            <!-- 1. 多 API 接口配置管理 -->
+            <!-- 1. 多 API 接口配置管理（含模型拉取与持久化配置） -->
             <section class="ai-section">
               <div class="ai-section-head">
                 <div class="ai-section-title">
                   <span class="step-num">1</span>
                   <span>AI 接口配置（支持 OpenAI 官方与第三方中转）</span>
                 </div>
-                <button type="button" class="ai-btn ai-btn-sm ai-btn-outline" @click="openNewConfigForm">
+                <button type="button" class="ai-btn ai-btn-sm ai-btn-outline" :disabled="organizing" @click="openNewConfigForm">
                   + 新增接口
                 </button>
               </div>
@@ -35,7 +63,7 @@
                   v-for="cfg in configs"
                   :key="cfg.id"
                   :class="['config-item', { active: cfg.is_active }]"
-                  @click="handleActivate(cfg)"
+                  @click="!organizing && handleActivate(cfg)"
                 >
                   <div class="config-radio">
                     <span :class="['radio-dot', { checked: cfg.is_active }]"></span>
@@ -44,13 +72,14 @@
                     <div class="config-name-row">
                       <span class="config-name">{{ cfg.name }}</span>
                       <span v-if="cfg.is_active" class="active-tag">当前激活</span>
-                      <span v-if="cfg.model" class="model-tag">{{ cfg.model }}</span>
+                      <span v-if="cfg.model" class="model-tag" :title="`已配置模型：${cfg.model}`">{{ cfg.model }}</span>
+                      <span v-else class="model-missing-tag">未配置模型</span>
                     </div>
                     <div class="config-url">{{ cfg.base_url }}</div>
                   </div>
                   <div class="config-actions" @click.stop>
-                    <button type="button" class="ai-icon-btn" title="编辑配置" @click="openEditConfigForm(cfg)">✎</button>
-                    <button type="button" class="ai-icon-btn danger" title="删除配置" @click="handleDeleteConfig(cfg)">🗑</button>
+                    <button type="button" class="ai-icon-btn" title="编辑配置与模型" :disabled="organizing" @click="openEditConfigForm(cfg)">✎</button>
+                    <button type="button" class="ai-icon-btn danger" title="删除配置" :disabled="organizing" @click="handleDeleteConfig(cfg)">🗑</button>
                   </div>
                 </div>
               </div>
@@ -58,8 +87,9 @@
                 尚未配置 AI 接口，请点击右上角「+ 新增接口」添加 OpenAI 或兼容中转服务。
               </div>
 
+              <!-- 新增 / 编辑配置表单（内置模型拉取与选择） -->
               <div v-if="showConfigForm" class="config-form">
-                <div class="config-form-title">{{ editingConfigId ? '编辑 AI 接口' : '新增 AI 接口' }}</div>
+                <div class="config-form-title">{{ editingConfigId ? '编辑 AI 接口与模型' : '新增 AI 接口与模型' }}</div>
                 <div class="form-grid">
                   <label class="form-field">
                     <span>配置名称 *</span>
@@ -69,7 +99,7 @@
                     <span>API Base URL *</span>
                     <input v-model="configForm.base_url" type="url" placeholder="https://api.openai.com/v1" />
                   </label>
-                  <label class="form-field">
+                  <label class="form-field form-field-full">
                     <span>API Key *</span>
                     <div class="key-input-wrap">
                       <input
@@ -83,10 +113,36 @@
                       </button>
                     </div>
                   </label>
-                  <label class="form-field">
-                    <span>默认模型（可选）</span>
-                    <input v-model="configForm.model" type="text" placeholder="如：gpt-4o-mini / deepseek-chat" />
-                  </label>
+                  <div class="form-field form-field-full">
+                    <div class="model-field-head">
+                      <span>使用模型 *（支持先拉取再选，或直接手动输入）</span>
+                      <button
+                        type="button"
+                        class="ai-btn ai-btn-xs ai-btn-outline"
+                        :disabled="fetchingModels || !configForm.base_url.trim() || !configForm.api_key.trim()"
+                        @click="handleFetchFormModels"
+                      >
+                        {{ fetchingModels ? '拉取中...' : '🔄 拉取模型列表' }}
+                      </button>
+                    </div>
+                    <div class="model-select-row">
+                      <select
+                        v-if="formModels.length"
+                        :value="formModels.includes(configForm.model) ? configForm.model : ''"
+                        class="ai-select"
+                        @change="onFormDropdownModelChange"
+                      >
+                        <option value="">-- 从拉取的 {{ formModels.length }} 个模型中选择 --</option>
+                        <option v-for="m in formModels" :key="m" :value="m">{{ m }}</option>
+                      </select>
+                      <input
+                        v-model="configForm.model"
+                        type="text"
+                        class="ai-input"
+                        :placeholder="formModels.length ? '或手动输入任意模型名称' : '可点击右上角拉取模型列表（无需先保存），或手动输入模型名如 gpt-4o-mini'"
+                      />
+                    </div>
+                  </div>
                 </div>
                 <div class="form-actions">
                   <button type="button" class="ai-btn ai-btn-sm ai-btn-ghost" @click="cancelConfigForm">取消</button>
@@ -97,73 +153,36 @@
               </div>
             </section>
 
-            <!-- 2. 模型选择（本次执行用，无需单独保存） -->
+            <!-- 2. 整理范围、后端测活与自定义 Prompt（顺延为第 2 步） -->
             <section class="ai-section">
               <div class="ai-section-head">
                 <div class="ai-section-title">
                   <span class="step-num">2</span>
-                  <span>选择模型</span>
-                  <span class="section-sub-hint">（本次执行使用，选择或输入后无需保存即可直接执行）</span>
-                </div>
-                <button
-                  type="button"
-                  class="ai-btn ai-btn-sm ai-btn-outline"
-                  :disabled="fetchingModels || !activeConfig"
-                  @click="handleFetchModels"
-                >
-                  {{ fetchingModels ? '拉取中...' : '🔄 拉取模型列表' }}
-                </button>
-              </div>
-              <div class="model-select-row">
-                <select
-                  v-if="fetchedModels.length"
-                  :value="fetchedModels.includes(selectedModel) ? selectedModel : ''"
-                  class="ai-select"
-                  @change="onDropdownModelChange"
-                >
-                  <option value="">-- 从拉取的模型中选择 --</option>
-                  <option v-for="m in fetchedModels" :key="m" :value="m">{{ m }}</option>
-                </select>
-                <input
-                  :value="selectedModel"
-                  type="text"
-                  class="ai-input"
-                  :placeholder="fetchedModels.length ? '或直接手动输入任意模型名称' : '可点击右上角拉取模型列表，或直接手动输入模型名（如 gpt-4o-mini）'"
-                  @input="onManualModelInput"
-                />
-              </div>
-            </section>
-
-            <!-- 3. 整理范围、后端测活与自定义 Prompt -->
-            <section class="ai-section">
-              <div class="ai-section-head">
-                <div class="ai-section-title">
-                  <span class="step-num">3</span>
                   <span>整理范围与整理要求（选填）</span>
                 </div>
                 <label class="probe-toggle">
-                  <input v-model="enableProbe" type="checkbox" />
+                  <input v-model="enableProbe" type="checkbox" :disabled="organizing" />
                   <span>启用后端真实测活（含 403/CF 盾识别）</span>
                 </label>
               </div>
 
               <div class="scope-cards">
                 <label :class="['scope-card', { active: organizeScope === 'smart' }]">
-                  <input v-model="organizeScope" type="radio" value="smart" />
+                  <input v-model="organizeScope" type="radio" value="smart" :disabled="organizing" />
                   <div>
                     <div class="scope-card-title">推荐：未分类/缺描述整理 + 全站死链检测</div>
                     <div class="scope-card-desc">全站测活并检测重复，仅对异常、缺描述及未分类卡片做归类整理，不打乱已有布局</div>
                   </div>
                 </label>
                 <label :class="['scope-card', { active: organizeScope === 'all' }]">
-                  <input v-model="organizeScope" type="radio" value="all" />
+                  <input v-model="organizeScope" type="radio" value="all" :disabled="organizing" />
                   <div>
                     <div class="scope-card-title">全站完整整理 + 全站死链检测</div>
                     <div class="scope-card-desc">全站卡片一并交给 AI 检查描述补全、名称大小写规范与死链归类</div>
                   </div>
                 </label>
                 <label :class="['scope-card', { active: organizeScope === 'current', disabled: !hasCurrentFilter }]">
-                  <input v-model="organizeScope" type="radio" value="current" :disabled="!hasCurrentFilter" />
+                  <input v-model="organizeScope" type="radio" value="current" :disabled="!hasCurrentFilter || organizing" />
                   <div>
                     <div class="scope-card-title">仅当前筛选栏目</div>
                     <div class="scope-card-desc">{{ hasCurrentFilter ? '仅测活并整理当前表格选定的栏目' : '请在卡片列表选定具体主菜单后可用' }}</div>
@@ -175,6 +194,7 @@
                 v-model="customPrompt"
                 class="ai-textarea"
                 rows="3"
+                :disabled="organizing"
                 placeholder="自定义整理要求（选填）。留空将执行默认「防乱 + 防硬塞平衡版」规则：严禁自建/改名栏目、匹配度不足归入「待归类」或标记需人工复核、≥3 张同类新站点仅给出新增子菜单建议、补全 15 字内中文描述并规范大小写、结合后端测活标记死链/停用/重复卡片。"
               ></textarea>
             </section>
@@ -182,7 +202,6 @@
 
           <!-- 阶段二：双 Tab Diff 预览 + 建议新增子菜单 -->
           <div v-else class="ai-preview-view">
-            <!-- 测活统计与返回栏 -->
             <div class="preview-summary">
               <div class="summary-left">
                 <span>探测 <strong>{{ previewMeta.totalProbed }}</strong></span>
@@ -197,7 +216,7 @@
               </button>
             </div>
 
-            <!-- 建议新增子菜单提示区（仅作建议，需用户手动点击确认创建） -->
+            <!-- 建议新增子菜单提示区 -->
             <div v-if="suggestedSubMenus.length" class="suggestion-panel">
               <div class="suggestion-header">
                 <strong>💡 AI 建议新增子菜单（仅作建议，点击确认创建后才生效）</strong>
@@ -386,29 +405,40 @@
 
         <div class="ai-modal-footer">
           <template v-if="step === 'config'">
-            <button type="button" class="ai-btn ai-btn-ghost" @click="handleClose">关闭</button>
-            <button
-              type="button"
-              class="ai-btn ai-btn-primary"
-              :disabled="organizing || !activeConfig || !selectedModel.trim()"
-              @click="handleOrganize"
-            >
-              <span v-if="organizing" class="spinner"></span>
-              {{ organizing ? (enableProbe ? '正在后端测活并执行 AI 分析...' : 'AI 正在分析整理中...') : '✨ 开始测活与 AI 整理' }}
-            </button>
+            <div class="footer-active-info" v-if="activeConfig">
+              当前执行：<strong>{{ activeConfig.name }}</strong>
+              <span v-if="activeConfig.model" class="model-tag">{{ activeConfig.model }}</span>
+              <span v-else class="model-missing-tag">未配置模型</span>
+            </div>
+            <div class="footer-buttons">
+              <button type="button" class="ai-btn ai-btn-ghost" @click="handleClose">
+                {{ organizing ? '取消并关闭' : '关闭' }}
+              </button>
+              <button
+                type="button"
+                class="ai-btn ai-btn-primary"
+                :disabled="organizing || !activeConfig"
+                @click="handleOrganize"
+              >
+                <span v-if="organizing" class="spinner"></span>
+                {{ organizing ? '后台执行中...' : '✨ 开始测活与 AI 整理' }}
+              </button>
+            </div>
           </template>
           <template v-else>
-            <button type="button" class="ai-btn ai-btn-ghost" @click="step = 'config'">重新整理</button>
-            <button
-              v-if="diffUpdates.length || diffRecycles.length"
-              type="button"
-              class="ai-btn ai-btn-primary"
-              :disabled="applying || (selectedUpdateIds.length === 0 && selectedRecycleIds.length === 0)"
-              @click="handleApply"
-            >
-              {{ applying ? '正在应用更改...' : `应用更改（更新 ${selectedUpdateIds.length} · 移入回收站 ${selectedRecycleIds.length}）` }}
-            </button>
-            <button v-else type="button" class="ai-btn ai-btn-primary" @click="handleClose">完成</button>
+            <div class="footer-buttons">
+              <button type="button" class="ai-btn ai-btn-ghost" @click="step = 'config'">重新整理</button>
+              <button
+                v-if="diffUpdates.length || diffRecycles.length"
+                type="button"
+                class="ai-btn ai-btn-primary"
+                :disabled="applying || (selectedUpdateIds.length === 0 && selectedRecycleIds.length === 0)"
+                @click="handleApply"
+              >
+                {{ applying ? '正在应用更改...' : `应用更改（更新 ${selectedUpdateIds.length} · 移入回收站 ${selectedRecycleIds.length}）` }}
+              </button>
+              <button v-else type="button" class="ai-btn ai-btn-primary" @click="handleClose">完成</button>
+            </div>
           </template>
         </div>
       </div>
@@ -417,7 +447,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, onBeforeUnmount } from 'vue';
 import {
   getAiConfigs,
   addAiConfig,
@@ -425,10 +455,14 @@ import {
   activateAiConfig,
   deleteAiConfig,
   fetchAiModels,
-  runAiOrganize,
+  startAiOrganize,
+  getAiOrganizeStatus,
+  cancelAiOrganize,
   applyAiOrganize,
   addSubMenu
 } from '../api';
+
+const POLL_INTERVAL_MS = 2000;
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -446,16 +480,26 @@ const editingConfigId = ref(null);
 const showApiKey = ref(false);
 const savingConfig = ref(false);
 const configForm = ref({ name: '', base_url: 'https://api.openai.com/v1', api_key: '', model: '' });
-
-const fetchedModels = ref([]);
+const formModels = ref([]);
 const fetchingModels = ref(false);
-const selectedModel = ref('');
-const hasManuallySelectedModel = ref(false);
+
 const organizeScope = ref('smart');
 const enableProbe = ref(true);
 const customPrompt = ref('');
 const organizing = ref(false);
 const applying = ref(false);
+
+// 异步任务与轮询状态
+const currentTaskId = ref('');
+let pollTimer = null;
+const taskProgress = ref({
+  progress: 0,
+  message: '',
+  probed_done: 0,
+  probed_total: 0,
+  batch_done: 0,
+  batch_total: 0
+});
 
 const diffUpdates = ref([]);
 const selectedUpdateIds = ref([]);
@@ -493,6 +537,13 @@ function clearNotice() {
   notice.value = { text: '', type: 'info' };
 }
 
+function stopPolling() {
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = null;
+  }
+}
+
 function formatRequestError(err, fallback) {
   const status = err?.response?.status;
   const data = err?.response?.data;
@@ -513,15 +564,14 @@ function formatRequestError(err, fallback) {
   if (detail) {
     return status && !detail.includes(String(status)) ? `[HTTP ${status}] ${detail}` : detail;
   }
-
   if (status === 504 || status === 502) {
-    return `${fallback}（HTTP ${status} 网关超时/代理断开，可尝试缩小整理范围或关闭测活后重试）`;
+    return `${fallback}（HTTP ${status} 网关超时/代理断开）`;
   }
   if (status) {
     return `${fallback}（HTTP ${status}${err?.response?.statusText ? ` ${err.response.statusText}` : ''}）`;
   }
   if (err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message || '')) {
-    return `${fallback}（请求超时，当前卡片较多或中转接口响应过慢，请缩小范围或更换响应更快的模型）`;
+    return `${fallback}（请求超时）`;
   }
   if (err?.message) {
     return `${fallback}（${err.message}${err.code ? ` / ${err.code}` : ''}）`;
@@ -529,41 +579,35 @@ function formatRequestError(err, fallback) {
   return fallback;
 }
 
-function onDropdownModelChange(event) {
-  const val = event.target.value;
-  if (val) {
-    selectedModel.value = val;
-    hasManuallySelectedModel.value = true;
-  }
-}
-
-function onManualModelInput(event) {
-  selectedModel.value = event.target.value;
-  hasManuallySelectedModel.value = Boolean(event.target.value.trim());
-}
-
 watch(() => props.visible, async (val) => {
   if (val) {
     clearNotice();
+    stopPolling();
+    organizing.value = false;
+    currentTaskId.value = '';
     step.value = 'config';
     previewTab.value = 'updates';
     createdAnySubMenu.value = false;
-    hasManuallySelectedModel.value = false;
     if (!hasCurrentFilter.value && organizeScope.value === 'current') {
       organizeScope.value = 'smart';
     }
-    await loadConfigs({ syncDefaultModel: true });
+    await loadConfigs();
+  } else {
+    stopPolling();
   }
 });
 
-async function loadConfigs({ syncDefaultModel = false } = {}) {
+onBeforeUnmount(() => {
+  stopPolling();
+  if (organizing.value && currentTaskId.value) {
+    cancelAiOrganize(currentTaskId.value).catch(() => {});
+  }
+});
+
+async function loadConfigs() {
   try {
     const { data } = await getAiConfigs();
     configs.value = data.data || [];
-    const active = configs.value.find(c => c.is_active) || configs.value[0] || null;
-    if (syncDefaultModel || !hasManuallySelectedModel.value) {
-      selectedModel.value = active?.model || '';
-    }
   } catch (err) {
     setNotice(formatRequestError(err, '读取 AI 接口配置失败'), 'error');
   }
@@ -573,6 +617,7 @@ function openNewConfigForm() {
   clearNotice();
   editingConfigId.value = null;
   showApiKey.value = false;
+  formModels.value = [];
   configForm.value = { name: '', base_url: 'https://api.openai.com/v1', api_key: '', model: '' };
   showConfigForm.value = true;
 }
@@ -581,6 +626,7 @@ function openEditConfigForm(cfg) {
   clearNotice();
   editingConfigId.value = cfg.id;
   showApiKey.value = false;
+  formModels.value = [];
   configForm.value = {
     name: cfg.name,
     base_url: cfg.base_url,
@@ -593,6 +639,44 @@ function openEditConfigForm(cfg) {
 function cancelConfigForm() {
   showConfigForm.value = false;
   editingConfigId.value = null;
+  formModels.value = [];
+}
+
+function onFormDropdownModelChange(event) {
+  const val = event.target.value;
+  if (val) {
+    configForm.value.model = val;
+  }
+}
+
+async function handleFetchFormModels() {
+  const baseUrl = configForm.value.base_url.trim();
+  const apiKey = configForm.value.api_key.trim();
+  if (!baseUrl || !apiKey) {
+    setNotice('请先在表单中填写 API Base URL 和 API Key', 'error');
+    return;
+  }
+  fetchingModels.value = true;
+  clearNotice();
+  try {
+    const { data } = await fetchAiModels({ base_url: baseUrl, api_key: apiKey });
+    formModels.value = data.models || [];
+    if (formModels.value.length) {
+      if (!configForm.value.model.trim()) {
+        const preferredChat = formModels.value.find(
+          m => !/embedding|bge-|rerank|image|dall-e|whisper|tts|audio|moderation/i.test(m)
+        );
+        configForm.value.model = preferredChat || formModels.value[0];
+      }
+      setNotice(`成功拉取 ${formModels.value.length} 个模型，请选择后点击「保存配置」`, 'success');
+    } else {
+      setNotice('接口返回了空的模型列表，请直接在右侧手动输入模型名称', 'info');
+    }
+  } catch (err) {
+    setNotice(formatRequestError(err, '拉取模型列表失败'), 'error');
+  } finally {
+    fetchingModels.value = false;
+  }
 }
 
 async function handleSaveConfig() {
@@ -603,19 +687,17 @@ async function handleSaveConfig() {
   savingConfig.value = true;
   clearNotice();
   try {
-    const wasEditingActive = editingConfigId.value && activeConfig.value?.id === editingConfigId.value;
-    const isCreatingNew = !editingConfigId.value;
     if (editingConfigId.value) {
       await updateAiConfig(editingConfigId.value, configForm.value);
-      setNotice('AI 接口配置已更新', 'success');
+      setNotice('AI 接口与模型配置已更新', 'success');
     } else {
       await addAiConfig({ ...configForm.value, is_active: true });
-      setNotice('AI 接口配置已添加并激活', 'success');
+      setNotice('AI 接口与模型配置已添加并激活', 'success');
     }
     showConfigForm.value = false;
     editingConfigId.value = null;
-    fetchedModels.value = [];
-    await loadConfigs({ syncDefaultModel: !hasManuallySelectedModel.value || (isCreatingNew && Boolean(configForm.value.model?.trim())) || (wasEditingActive && !hasManuallySelectedModel.value) });
+    formModels.value = [];
+    await loadConfigs();
   } catch (err) {
     setNotice(formatRequestError(err, '保存配置失败'), 'error');
   } finally {
@@ -628,8 +710,7 @@ async function handleActivate(cfg) {
   clearNotice();
   try {
     await activateAiConfig(cfg.id);
-    fetchedModels.value = [];
-    await loadConfigs({ syncDefaultModel: !hasManuallySelectedModel.value });
+    await loadConfigs();
   } catch (err) {
     setNotice(formatRequestError(err, '切换接口失败'), 'error');
   }
@@ -641,54 +722,106 @@ async function handleDeleteConfig(cfg) {
   try {
     await deleteAiConfig(cfg.id);
     if (editingConfigId.value === cfg.id) cancelConfigForm();
-    fetchedModels.value = [];
-    await loadConfigs({ syncDefaultModel: !hasManuallySelectedModel.value });
+    await loadConfigs();
     setNotice('配置已删除', 'success');
   } catch (err) {
     setNotice(formatRequestError(err, '删除配置失败'), 'error');
   }
 }
 
-async function handleFetchModels() {
-  if (!activeConfig.value) {
-    setNotice('请先添加并激活一个 AI 接口', 'error');
-    return;
-  }
-  fetchingModels.value = true;
-  clearNotice();
+function applyOrganizeResult(data) {
+  diffUpdates.value = data.updates || data.changes || [];
+  diffRecycles.value = data.recycles || [];
+  suggestedSubMenus.value = (data.suggested_sub_menus || []).map(s => ({ ...s, created: false }));
+  selectedUpdateIds.value = diffUpdates.value
+    .filter(item => item.changed_fields && item.changed_fields.length > 0)
+    .map(item => item.id);
+  selectedRecycleIds.value = diffRecycles.value.map(item => item.id);
+  probeStats.value = data.probe_stats || { total: 0, reachable: 0, waf_403: 0, suspected_dead: 0, suspected_expired: 0 };
+  previewMeta.value = {
+    totalAnalyzed: data.total_analyzed || 0,
+    totalProbed: data.total_probed || data.total_analyzed || 0,
+    model: data.model || activeConfig.value?.model || ''
+  };
+  previewTab.value = !diffUpdates.value.length && diffRecycles.value.length ? 'recycles' : 'updates';
+  step.value = 'preview';
+}
+
+async function pollTaskOnce(taskId) {
+  if (!organizing.value || currentTaskId.value !== taskId) return;
   try {
-    const { data } = await fetchAiModels({ config_id: activeConfig.value.id });
-    fetchedModels.value = data.models || [];
-    if (fetchedModels.value.length) {
-      if (!selectedModel.value.trim()) {
-        selectedModel.value = fetchedModels.value[0];
-      }
-      setNotice(`成功拉取 ${fetchedModels.value.length} 个可用模型`, 'success');
-    } else {
-      setNotice('接口返回了空的模型列表，你可以直接在右侧手动输入模型名称', 'info');
+    const { data } = await getAiOrganizeStatus(taskId);
+    if (!organizing.value || currentTaskId.value !== taskId) return;
+
+    taskProgress.value = {
+      progress: Number(data.progress || 0),
+      message: data.message || '正在后台处理...',
+      probed_done: Number(data.probed_done || 0),
+      probed_total: Number(data.probed_total || 0),
+      batch_done: Number(data.batch_done || 0),
+      batch_total: Number(data.batch_total || 0)
+    };
+
+    if (data.status === 'completed') {
+      stopPolling();
+      organizing.value = false;
+      currentTaskId.value = '';
+      applyOrganizeResult(data.result || {});
+      return;
     }
+
+    if (data.status === 'failed') {
+      stopPolling();
+      organizing.value = false;
+      currentTaskId.value = '';
+      setNotice(data.message || `AI 智能整理失败：${data.error || '未知错误'}`, 'error');
+      return;
+    }
+
+    if (data.status === 'cancelled') {
+      stopPolling();
+      organizing.value = false;
+      currentTaskId.value = '';
+      setNotice('整理任务已取消', 'info');
+      return;
+    }
+
+    pollTimer = setTimeout(() => pollTaskOnce(taskId), POLL_INTERVAL_MS);
   } catch (err) {
-    setNotice(formatRequestError(err, '拉取模型列表失败'), 'error');
-  } finally {
-    fetchingModels.value = false;
+    stopPolling();
+    organizing.value = false;
+    currentTaskId.value = '';
+    setNotice(formatRequestError(err, '查询整理进度失败'), 'error');
   }
 }
 
 async function handleOrganize() {
   if (!activeConfig.value) {
-    setNotice('请先添加并激活一个 AI 接口配置', 'error');
+    setNotice('请先在步骤 1 添加并激活一个 AI 接口配置', 'error');
     return;
   }
-  if (!selectedModel.value.trim()) {
-    setNotice('请先选择或手动输入要使用的模型名称', 'error');
+  const activeModel = String(activeConfig.value.model || '').trim();
+  if (!activeModel) {
+    setNotice(`当前激活的接口「${activeConfig.value.name}」尚未配置模型，请点击其右侧 ✎ 编辑，拉取或填写模型并保存`, 'error');
+    openEditConfigForm(activeConfig.value);
     return;
   }
+
   organizing.value = true;
   clearNotice();
+  taskProgress.value = {
+    progress: 2,
+    message: '正在创建后台整理任务...',
+    probed_done: 0,
+    probed_total: 0,
+    batch_done: 0,
+    batch_total: 0
+  };
+
   try {
     const payload = {
       config_id: activeConfig.value.id,
-      model: selectedModel.value.trim(),
+      model: activeModel,
       prompt: customPrompt.value.trim(),
       scope: organizeScope.value,
       enable_probe: enableProbe.value
@@ -697,27 +830,26 @@ async function handleOrganize() {
       payload.menu_id = props.currentMenuId;
       payload.sub_menu_id = props.currentSubMenuId;
     }
-    const { data } = await runAiOrganize(payload);
-    diffUpdates.value = data.updates || data.changes || [];
-    diffRecycles.value = data.recycles || [];
-    suggestedSubMenus.value = (data.suggested_sub_menus || []).map(s => ({ ...s, created: false }));
-    selectedUpdateIds.value = diffUpdates.value
-      .filter(item => item.changed_fields && item.changed_fields.length > 0)
-      .map(item => item.id);
-    selectedRecycleIds.value = diffRecycles.value.map(item => item.id);
-    probeStats.value = data.probe_stats || { total: 0, reachable: 0, waf_403: 0, suspected_dead: 0, suspected_expired: 0 };
-    previewMeta.value = {
-      totalAnalyzed: data.total_analyzed || 0,
-      totalProbed: data.total_probed || data.total_analyzed || 0,
-      model: data.model || selectedModel.value.trim()
-    };
-    previewTab.value = !diffUpdates.value.length && diffRecycles.value.length ? 'recycles' : 'updates';
-    step.value = 'preview';
+    const { data } = await startAiOrganize(payload);
+    currentTaskId.value = data.taskId;
+    taskProgress.value.message = data.message || '后台任务已启动，正在测活与整理...';
+    pollTimer = setTimeout(() => pollTaskOnce(data.taskId), POLL_INTERVAL_MS);
   } catch (err) {
-    setNotice(formatRequestError(err, 'AI 智能整理执行失败'), 'error');
-  } finally {
     organizing.value = false;
+    currentTaskId.value = '';
+    setNotice(formatRequestError(err, '启动 AI 整理任务失败'), 'error');
   }
+}
+
+async function handleCancelTask() {
+  const taskId = currentTaskId.value;
+  stopPolling();
+  organizing.value = false;
+  currentTaskId.value = '';
+  if (taskId) {
+    await cancelAiOrganize(taskId).catch(() => {});
+  }
+  setNotice('整理任务已取消', 'info');
 }
 
 async function handleConfirmCreateSubMenu(sug, idx) {
@@ -839,8 +971,17 @@ async function handleApply() {
   }
 }
 
-function handleClose() {
-  if (organizing.value || applying.value) return;
+async function handleClose() {
+  if (applying.value) return;
+  if (organizing.value) {
+    const taskId = currentTaskId.value;
+    stopPolling();
+    organizing.value = false;
+    currentTaskId.value = '';
+    if (taskId) {
+      await cancelAiOrganize(taskId).catch(() => {});
+    }
+  }
   if (createdAnySubMenu.value) {
     emit('applied', { updated: 0, recycled: 0, menusChanged: true });
   }
@@ -928,15 +1069,73 @@ function handleClose() {
   line-height: 1.5;
   word-break: break-word;
 }
-
-.section-sub-hint {
-  font-size: 0.76rem;
-  font-weight: 400;
-  color: #64748b;
-}
 .ai-notice.success { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
 .ai-notice.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 .ai-notice.info { background: #eff6ff; color: #1e40af; border: 1px solid #bfdbfe; }
+
+/* 异步任务进度条面板 */
+.task-progress-panel {
+  padding: 12px 15px;
+  border-radius: 11px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.progress-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.progress-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  color: #312e81;
+}
+
+.progress-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.progress-pct {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #4f46e5;
+}
+
+.progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: #dbeafe;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+  transition: width 0.35s ease;
+}
+
+.progress-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  color: #4338ca;
+}
 
 .ai-config-view,
 .ai-preview-view {
@@ -1031,10 +1230,17 @@ function handleClose() {
   border-radius: 4px;
   background: #e0e7ff;
   color: #4338ca;
-  max-width: 160px;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.model-missing-tag {
+  font-size: 0.72rem;
+  padding: 1px 7px;
+  border-radius: 4px;
+  background: #ffedd5;
+  color: #c2410c;
 }
 .config-url { font-size: 0.75rem; color: #64748b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
 .config-actions { display: flex; gap: 4px; }
@@ -1048,8 +1254,8 @@ function handleClose() {
   border-radius: 6px;
   cursor: pointer;
 }
-.ai-icon-btn:hover { background: #f1f5f9; }
-.ai-icon-btn.danger:hover { background: #fee2e2; color: #dc2626; border-color: #fecaca; }
+.ai-icon-btn:hover:not(:disabled) { background: #f1f5f9; }
+.ai-icon-btn.danger:hover:not(:disabled) { background: #fee2e2; color: #dc2626; border-color: #fecaca; }
 
 .empty-config-tip {
   text-align: center;
@@ -1070,7 +1276,8 @@ function handleClose() {
 }
 .config-form-title { font-weight: 600; font-size: 0.86rem; margin-bottom: 10px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
-.form-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: #475569; }
+.form-field { display: flex; flex-direction: column; gap: 5px; font-size: 0.78rem; color: #475569; }
+.form-field-full { grid-column: 1 / -1; }
 .form-field input {
   padding: 7px 10px;
   border: 1px solid #cbd5e1;
@@ -1080,19 +1287,25 @@ function handleClose() {
 .key-input-wrap { display: flex; gap: 4px; }
 .key-input-wrap input { flex: 1; min-width: 0; }
 .toggle-key-btn { border: 1px solid #cbd5e1; background: #f8fafc; border-radius: 7px; padding: 0 8px; cursor: pointer; }
-.form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
-
-.model-select-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.model-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.model-select-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .ai-select,
 .ai-input {
   flex: 1;
-  min-width: 220px;
-  padding: 8px 11px;
+  min-width: 210px;
+  padding: 7px 10px;
   border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  font-size: 0.86rem;
+  border-radius: 7px;
+  font-size: 0.85rem;
   background: #fff;
 }
+.form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
 .probe-toggle {
   display: inline-flex;
@@ -1173,12 +1386,7 @@ function handleClose() {
   padding: 10px 14px;
 }
 
-.suggestion-header {
-  font-size: 0.84rem;
-  color: #92400e;
-  margin-bottom: 8px;
-}
-
+.suggestion-header { font-size: 0.84rem; color: #92400e; margin-bottom: 8px; }
 .suggestion-list { display: flex; flex-direction: column; gap: 8px; }
 .suggestion-item {
   display: flex;
@@ -1216,25 +1424,11 @@ function handleClose() {
   font-weight: 600;
   cursor: pointer;
 }
-.preview-tab.active {
-  background: #4f46e5;
-  color: #fff;
-  border-color: #4f46e5;
-}
-.preview-tab.recycle-tab.active {
-  background: #dc2626;
-  border-color: #dc2626;
-}
+.preview-tab.active { background: #4f46e5; color: #fff; border-color: #4f46e5; }
+.preview-tab.recycle-tab.active { background: #dc2626; border-color: #dc2626; }
 
-.tab-badge {
-  font-size: 0.74rem;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.08);
-}
-.preview-tab.active .tab-badge {
-  background: rgba(255, 255, 255, 0.25);
-}
+.tab-badge { font-size: 0.74rem; padding: 1px 7px; border-radius: 999px; background: rgba(15, 23, 42, 0.08); }
+.preview-tab.active .tab-badge { background: rgba(255, 255, 255, 0.25); }
 
 .empty-diff { text-align: center; padding: 34px 20px; color: #475569; }
 .empty-diff-icon { font-size: 2rem; margin-bottom: 6px; }
@@ -1328,8 +1522,26 @@ function handleClose() {
   border-top: 1px solid #e2e8f0;
   background: #f8fafc;
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
+}
+
+.footer-active-info {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.82rem;
+  color: #475569;
+  flex-wrap: wrap;
+}
+
+.footer-buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
 }
 
 .ai-btn {
@@ -1345,10 +1557,13 @@ function handleClose() {
 }
 .ai-btn:disabled { opacity: 0.55; cursor: not-allowed; }
 .ai-btn-sm { padding: 5px 11px; font-size: 0.8rem; }
+.ai-btn-xs { padding: 3px 9px; font-size: 0.76rem; }
 .ai-btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; }
 .ai-btn-primary:hover:not(:disabled) { filter: brightness(1.06); }
 .ai-btn-outline { background: #fff; color: #4f46e5; border: 1px solid #c7d2fe; }
 .ai-btn-outline:hover:not(:disabled) { background: #eef2ff; }
+.ai-btn-danger-outline { background: #fff; color: #dc2626; border: 1px solid #fecaca; }
+.ai-btn-danger-outline:hover:not(:disabled) { background: #fef2f2; }
 .ai-btn-ghost { background: #e2e8f0; color: #334155; }
 
 .spinner {
@@ -1358,6 +1573,10 @@ function handleClose() {
   border-top-color: #fff;
   border-radius: 50%;
   animation: ai-spin 0.7s linear infinite;
+}
+.spinner.dark {
+  border-color: rgba(79, 70, 229, 0.25);
+  border-top-color: #4f46e5;
 }
 @keyframes ai-spin { to { transform: rotate(360deg); } }
 

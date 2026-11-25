@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const dns = require('dns').promises;
 const ipaddr = require('ipaddr.js');
 const db = require('../db');
@@ -19,12 +20,15 @@ const DEFAULT_ORGANIZE_PROMPT = [
   '   - 确认与其他卡片重复指向同一站点功能页（保留信息最完整的一张，将其余重复项移入回收站）标为 duplicate 放入 recycles。'
 ].join('\n');
 
-const BATCH_SIZE = 40;
+const BATCH_SIZE = 15;
 const BATCH_CONCURRENCY = 2;
 const PROBE_CONCURRENCY = 16;
 const PROBE_TIMEOUT_MS = 5000;
+const AI_IDLE_TIMEOUT_MS = 90000;
 const AI_REQUEST_TIMEOUT_MS = 180000;
 const PROBE_MAX_HTML_BYTES = 16384;
+const TASK_TTL_MS = 30 * 60 * 1000;
+const MAX_TASK_RECORDS = 100;
 
 const EXPIRED_DOMAIN_PATTERNS = [
   /domain\s+(is\s+)?for\s+sale/i,
@@ -183,25 +187,21 @@ function parseAiJson(rawText) {
   let text = String(rawText || '').trim();
   if (!text) throw new Error('AI 返回内容为空');
 
-  // 移除推理模型输出的 <think>...</think> 块（兼容未闭合情况）
   text = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   if (/^<think>/i.test(text) && !/<\/think>/i.test(text)) {
     const braceIdx = text.indexOf('{');
     if (braceIdx !== -1) text = text.slice(braceIdx);
   }
 
-  // 1. 提取所有 ```json ... ``` 或 ``` ... ``` 代码块尝试解析
   const fenceMatches = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
   for (const match of fenceMatches) {
     const parsedFence = tryJsonParse(match[1]);
     if (parsedFence !== null) return parsedFence;
   }
 
-  // 2. 直接解析整段文本
   const direct = tryJsonParse(text);
   if (direct !== null) return direct;
 
-  // 3. 精准提取首个括号配平的 {...} 或 [...]
   const balancedObj = extractBalancedJsonCandidate(text, '{', '}');
   if (balancedObj) {
     const parsedObj = tryJsonParse(balancedObj);
@@ -213,7 +213,6 @@ function parseAiJson(rawText) {
     if (parsedArr !== null) return parsedArr;
   }
 
-  // 4. 回退首尾括号切片
   const firstObj = text.indexOf('{');
   const lastObj = text.lastIndexOf('}');
   if (firstObj !== -1 && lastObj > firstObj) {
@@ -223,35 +222,6 @@ function parseAiJson(rawText) {
 
   const preview = text.replace(/\s+/g, ' ').slice(0, 160);
   throw new Error(`无法解析 AI 返回的 JSON 内容（返回片段：${preview}${text.length > 160 ? '...' : ''}）`);
-}
-
-function parseSseStreamText(rawText) {
-  const lines = String(rawText || '').split(/\r?\n/);
-  let combined = '';
-  let finishReason = '';
-  let parsedChunks = 0;
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line.startsWith('data:')) continue;
-    const dataPart = line.slice(5).trim();
-    if (!dataPart || dataPart === '[DONE]') continue;
-    try {
-      const chunk = JSON.parse(dataPart);
-      parsedChunks++;
-      const choice = chunk?.choices?.[0];
-      if (choice?.finish_reason) finishReason = choice.finish_reason;
-      const delta = choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '';
-      if (typeof delta === 'string') combined += delta;
-      else if (Array.isArray(delta)) {
-        combined += delta.map(part => (typeof part === 'string' ? part : part?.text || '')).join('');
-      }
-    } catch {
-      // 忽略非 JSON SSE 行
-    }
-  }
-
-  return parsedChunks > 0 ? { content: combined, finishReason } : null;
 }
 
 function extractTextFromContentField(field) {
@@ -274,12 +244,49 @@ function extractTextFromContentField(field) {
   return '';
 }
 
+function parseSseStreamText(rawText) {
+  const lines = String(rawText || '').split(/\r?\n/);
+  let combined = '';
+  let finishReason = '';
+  let parsedChunks = 0;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) continue;
+    const dataPart = line.slice(5).trim();
+    if (!dataPart || dataPart === '[DONE]') continue;
+    try {
+      const chunk = JSON.parse(dataPart);
+      if (chunk?.error) {
+        const msg = typeof chunk.error === 'string'
+          ? chunk.error
+          : (chunk.error.message || JSON.stringify(chunk.error).slice(0, 200));
+        throw new Error(`流式响应返回错误：${msg}`);
+      }
+      parsedChunks++;
+      const choice = chunk?.choices?.[0];
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '';
+      if (typeof delta === 'string') combined += delta;
+      else if (Array.isArray(delta)) {
+        combined += extractTextFromContentField(delta);
+      } else if (typeof chunk?.delta?.text === 'string') {
+        // 兼容 Anthropic 风格 SSE
+        combined += chunk.delta.text;
+      }
+    } catch (err) {
+      if (/流式响应返回错误/.test(err?.message || '')) throw err;
+    }
+  }
+
+  return parsedChunks > 0 ? { content: combined, finishReason } : null;
+}
+
 function extractChatContent(completion) {
   if (!completion || typeof completion !== 'object') {
     throw new Error('AI 接口响应为空或格式无效');
   }
 
-  // 部分第三方中转站会在 HTTP 200 中返回 error / code!=0
   if (completion.error) {
     const errMsg = typeof completion.error === 'string'
       ? completion.error
@@ -369,18 +376,13 @@ async function isPublicHostname(hostname) {
   if (ipaddr.isValid(clean)) {
     return isPublicIp(clean);
   }
-  try {
-    const records = await dns.lookup(clean, { all: true, verbatim: true });
-    if (!records.length) return false;
-    return records.every(r => isPublicIp(r.address));
-  } catch (err) {
-    // DNS 查询抛出的 ENOTFOUND 交由外层识别为 NXDOMAIN
-    throw err;
-  }
+  const records = await dns.lookup(clean, { all: true, verbatim: true });
+  if (!records.length) return false;
+  return records.every(r => isPublicIp(r.address));
 }
 
 async function readLimitedText(response, maxBytes = PROBE_MAX_HTML_BYTES) {
-  if (!response?.body) {
+  if (!response?.body || typeof response.body.getReader !== 'function') {
     if (typeof response?.text === 'function') {
       const text = await response.text();
       return text.slice(0, maxBytes);
@@ -409,7 +411,55 @@ async function readLimitedText(response, maxBytes = PROBE_MAX_HTML_BYTES) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-async function probeUrl(rawUrl, { fetchImpl = globalThis.fetch, checkPublicHost = true } = {}) {
+function createAbortError(message = '任务已取消') {
+  const err = new Error(message);
+  err.code = 'TASK_CANCELLED';
+  err.isCancelled = true;
+  return err;
+}
+
+function createCombinedController(timeoutMs, externalSignal) {
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const onExternalAbort = () => controller.abort();
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
+  let timer = timeoutMs > 0
+    ? setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs)
+    : null;
+
+  return {
+    signal: controller.signal,
+    wasTimedOut: () => timedOut,
+    resetTimeout(nextMs = timeoutMs) {
+      if (timer) clearTimeout(timer);
+      if (nextMs > 0 && !controller.signal.aborted) {
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, nextMs);
+      }
+    },
+    cleanup() {
+      if (timer) clearTimeout(timer);
+      if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
+    }
+  };
+}
+
+async function probeUrl(rawUrl, { fetchImpl = globalThis.fetch, checkPublicHost = true, signal = null } = {}) {
+  if (signal?.aborted) throw createAbortError();
+
   let parsed;
   try {
     parsed = new URL(String(rawUrl || '').trim());
@@ -467,14 +517,12 @@ async function probeUrl(rawUrl, { fetchImpl = globalThis.fetch, checkPublicHost 
     }
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-
+  const combined = createCombinedController(PROBE_TIMEOUT_MS, signal);
   try {
     const response = await fetchImpl(parsed.href, {
       method: 'GET',
       redirect: 'follow',
-      signal: controller.signal,
+      signal: combined.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -559,8 +607,9 @@ async function probeUrl(rawUrl, { fetchImpl = globalThis.fetch, checkPublicHost 
       summary: `HTTP ${status}${pageTitle ? ` · ${pageTitle}` : ''}`
     };
   } catch (err) {
+    if (signal?.aborted) throw createAbortError();
     const causeCode = err?.cause?.code || err?.code || '';
-    const isAbort = err?.name === 'AbortError' || causeCode === 'ETIMEDOUT' || causeCode === 'UND_ERR_CONNECT_TIMEOUT';
+    const isAbort = combined.wasTimedOut() || err?.name === 'AbortError' || causeCode === 'ETIMEDOUT' || causeCode === 'UND_ERR_CONNECT_TIMEOUT';
     const isNxdomain = causeCode === 'ENOTFOUND' || causeCode === 'EAI_NONAME';
     const errorCode = isNxdomain ? 'NXDOMAIN' : (isAbort ? 'TIMEOUT' : (causeCode || err?.message || 'FETCH_ERROR'));
     const summary = isNxdomain
@@ -579,21 +628,24 @@ async function probeUrl(rawUrl, { fetchImpl = globalThis.fetch, checkPublicHost 
       summary
     };
   } finally {
-    clearTimeout(timer);
+    combined.cleanup();
   }
 }
 
-async function probeCardsConcurrently(cards, probeFn, concurrency = PROBE_CONCURRENCY) {
+async function probeCardsConcurrently(cards, probeFn, { concurrency = PROBE_CONCURRENCY, signal = null, onProgress = null } = {}) {
   const results = new Map();
   let cursor = 0;
+  let completed = 0;
 
   async function worker() {
     while (cursor < cards.length) {
+      if (signal?.aborted) throw createAbortError();
       const idx = cursor++;
       const card = cards[idx];
       try {
-        results.set(card.id, await probeFn(card.url, card));
+        results.set(card.id, await probeFn(card.url, card, signal));
       } catch (err) {
+        if (err?.isCancelled || signal?.aborted) throw createAbortError();
         results.set(card.id, {
           reachable: false,
           status: null,
@@ -603,6 +655,10 @@ async function probeCardsConcurrently(cards, probeFn, concurrency = PROBE_CONCUR
           verdict: 'suspected_dead_link',
           summary: `探测异常 (${err?.message || 'unknown'})`
         });
+      }
+      completed++;
+      if (typeof onProgress === 'function') {
+        onProgress(completed, cards.length);
       }
     }
   }
@@ -635,7 +691,6 @@ function detectDuplicateHints(allActiveCards) {
   const hints = new Map();
   for (const group of groups.values()) {
     if (group.length < 2) continue;
-    // 优先保留有描述/排序靠前的第一张作为主保留参考
     const sorted = [...group].sort((a, b) => {
       const descDiff = (b.desc ? 1 : 0) - (a.desc ? 1 : 0);
       if (descDiff !== 0) return descDiff;
@@ -785,7 +840,6 @@ function computeOrganizePlan(cards, rawOutput, menus, subMenus, probeMap = new M
     });
   }
 
-  // 校验「建议新增子菜单」：必须存在合法父菜单、名称非空且不重名、且涉及 ≥3 张有效卡片
   const existingSubNamesByParent = new Map();
   for (const sm of subMenus) {
     const pid = Number(sm.parent_id);
@@ -824,30 +878,8 @@ function computeOrganizePlan(cards, rawOutput, menus, subMenus, probeMap = new M
   return { updates, recycles, suggested_sub_menus: suggestedSubMenus };
 }
 
-// 兼容旧测试导出名
 function computeOrganizeDiff(cards, rawChanges, menus, subMenus) {
   return computeOrganizePlan(cards, rawChanges, menus, subMenus).updates;
-}
-
-async function fetchWithTimeout(fetchImpl, url, options, timeoutMs) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetchImpl(url, { ...options, signal: controller.signal });
-  } catch (err) {
-    if (err?.name === 'AbortError') {
-      const timeoutErr = new Error(`上游接口请求超时（超过 ${Math.round(timeoutMs / 1000)} 秒未响应）`);
-      timeoutErr.code = 'ETIMEDOUT';
-      throw timeoutErr;
-    }
-    const causeMsg = err?.cause?.code || err?.cause?.message || '';
-    const detail = causeMsg ? `${err.message} (${causeMsg})` : (err?.message || '网络连接失败');
-    const netErr = new Error(`网络请求失败：${detail}`);
-    netErr.code = err?.cause?.code || err?.code || 'NETWORK_ERROR';
-    throw netErr;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function extractUpstreamErrorMessage(parsed, rawText, status) {
@@ -870,33 +902,137 @@ function extractUpstreamErrorMessage(parsed, rawText, status) {
   return plain ? plain.slice(0, 240) : `HTTP ${status}`;
 }
 
-async function requestOpenAiJson(fetchImpl, candidateUrls, { method = 'GET', apiKey, body, timeoutMs = 25000 }) {
+async function readResponseWithIdleTimeout(response, combinedController, idleTimeoutMs) {
+  if (!response?.body || typeof response.body.getReader !== 'function') {
+    return typeof response?.text === 'function' ? await response.text() : '';
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let rawFullText = '';
+  let sseBuffer = '';
+  let sseContent = '';
+  let sseFinishReason = '';
+  let sseChunks = 0;
+
+  const processLine = (rawLine) => {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) return;
+    const dataPart = line.slice(5).trim();
+    if (!dataPart || dataPart === '[DONE]') return;
+    try {
+      const chunk = JSON.parse(dataPart);
+      if (chunk?.error) {
+        const msg = typeof chunk.error === 'string'
+          ? chunk.error
+          : (chunk.error.message || JSON.stringify(chunk.error).slice(0, 200));
+        throw new Error(`流式响应返回错误：${msg}`);
+      }
+      sseChunks++;
+      const choice = chunk?.choices?.[0];
+      if (choice?.finish_reason) sseFinishReason = choice.finish_reason;
+      const delta = choice?.delta?.content ?? choice?.message?.content ?? choice?.text ?? '';
+      if (typeof delta === 'string') sseContent += delta;
+      else if (Array.isArray(delta)) sseContent += extractTextFromContentField(delta);
+      else if (typeof chunk?.delta?.text === 'string') sseContent += chunk.delta.text;
+    } catch (err) {
+      if (/流式响应返回错误/.test(err?.message || '')) throw err;
+    }
+  };
+
+  while (true) {
+    combinedController.resetTimeout(idleTimeoutMs);
+    const { done, value } = await reader.read();
+    if (done) break;
+    const textChunk = decoder.decode(value, { stream: true });
+    rawFullText += textChunk;
+    sseBuffer += textChunk;
+    const lines = sseBuffer.split(/\r?\n/);
+    sseBuffer = lines.pop() || '';
+    for (const line of lines) processLine(line);
+  }
+  const trailing = decoder.decode();
+  if (trailing) {
+    rawFullText += trailing;
+    sseBuffer += trailing;
+  }
+  if (sseBuffer.trim()) processLine(sseBuffer);
+
+  if (sseChunks > 0) {
+    return {
+      isSse: true,
+      content: sseContent,
+      finishReason: sseFinishReason
+    };
+  }
+  return rawFullText;
+}
+
+async function requestOpenAiResponse(fetchImpl, candidateUrls, { method = 'GET', apiKey, body, timeoutMs = 25000, idleTimeoutMs = AI_IDLE_TIMEOUT_MS, signal = null }) {
+  const isStreamRequest = Boolean(body?.stream);
   const headers = {
-    Accept: 'application/json',
+    Accept: isStreamRequest ? 'text/event-stream, application/json' : 'application/json',
     ...(body ? { 'Content-Type': 'application/json' } : {}),
     ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
   };
 
   let lastError = null;
   for (let i = 0; i < candidateUrls.length; i++) {
+    if (signal?.aborted) throw createAbortError();
     const url = candidateUrls[i];
-    const response = await fetchWithTimeout(fetchImpl, url, {
-      method,
-      headers,
-      ...(body ? { body: JSON.stringify(body) } : {})
-    }, timeoutMs);
+    const combined = createCombinedController(timeoutMs, signal);
 
-    const text = await response.text();
-    let parsed = null;
     try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      parsed = null;
-    }
+      const response = await fetchImpl(url, {
+        method,
+        headers,
+        signal: combined.signal,
+        ...(body ? { body: JSON.stringify(body) } : {})
+      });
 
-    if (response.ok) {
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        let parsed = null;
+        try {
+          parsed = text ? JSON.parse(text) : null;
+        } catch {
+          parsed = null;
+        }
+        const upstreamMessage = extractUpstreamErrorMessage(parsed, text, response.status);
+        lastError = new Error(`HTTP ${response.status}: ${upstreamMessage}`);
+        lastError.status = response.status;
+        lastError.upstreamMessage = upstreamMessage;
+        lastError.url = url;
+
+        if (response.status === 404 && i < candidateUrls.length - 1) {
+          continue;
+        }
+        throw lastError;
+      }
+
+      const rawOrSse = isStreamRequest
+        ? await readResponseWithIdleTimeout(response, combined, idleTimeoutMs)
+        : await response.text();
+
+      if (rawOrSse && typeof rawOrSse === 'object' && rawOrSse.isSse) {
+        return {
+          choices: [{
+            message: { content: rawOrSse.content },
+            finish_reason: rawOrSse.finishReason || 'stop'
+          }]
+        };
+      }
+
+      const text = String(rawOrSse || '');
+      let parsed = null;
+      try {
+        parsed = text ? JSON.parse(text) : null;
+      } catch {
+        parsed = null;
+      }
+
       if (parsed !== null) return parsed;
-      // 兼容部分中转站无视 stream:false 强制返回 SSE 文本流
+
       const sseResult = parseSseStreamText(text);
       if (sseResult && sseResult.content) {
         return {
@@ -906,22 +1042,30 @@ async function requestOpenAiJson(fetchImpl, candidateUrls, { method = 'GET', api
           }]
         };
       }
-      const preview = String(text || '').replace(/\s+/g, ' ').slice(0, 160);
+
+      const preview = text.replace(/\s+/g, ' ').slice(0, 160);
       const invalidErr = new Error(`上游接口返回了非 JSON 内容（HTTP ${response.status}）：${preview || '空响应'}`);
       invalidErr.status = response.status;
       throw invalidErr;
+    } catch (err) {
+      if (err?.isCancelled || signal?.aborted) throw createAbortError();
+      if (err?.status) throw err;
+      if (combined.wasTimedOut() || err?.name === 'AbortError') {
+        const timeoutErr = new Error(`上游接口请求超时（超过 ${Math.round((isStreamRequest ? idleTimeoutMs : timeoutMs) / 1000)} 秒无响应）`);
+        timeoutErr.code = 'ETIMEDOUT';
+        throw timeoutErr;
+      }
+      if (/流式响应返回错误|上游接口返回了非 JSON/.test(err?.message || '')) {
+        throw err;
+      }
+      const causeMsg = err?.cause?.code || err?.cause?.message || '';
+      const detail = causeMsg ? `${err.message} (${causeMsg})` : (err?.message || '网络连接失败');
+      const netErr = new Error(`网络请求失败：${detail}`);
+      netErr.code = err?.cause?.code || err?.code || 'NETWORK_ERROR';
+      throw netErr;
+    } finally {
+      combined.cleanup();
     }
-
-    const upstreamMessage = extractUpstreamErrorMessage(parsed, text, response.status);
-    lastError = new Error(`HTTP ${response.status}: ${upstreamMessage}`);
-    lastError.status = response.status;
-    lastError.upstreamMessage = upstreamMessage;
-    lastError.url = url;
-
-    if (response.status === 404 && i < candidateUrls.length - 1) {
-      continue;
-    }
-    throw lastError;
   }
   throw lastError || new Error('接口请求失败');
 }
@@ -939,63 +1083,95 @@ function mergeSystemIntoUserMessages(messages) {
   }];
 }
 
-async function callChatCompletionsWithFallback(fetchImpl, candidateUrls, { apiKey, model, messages, timeoutMs = AI_REQUEST_TIMEOUT_MS }) {
+async function callChatCompletionsWithFallback(fetchImpl, candidateUrls, { apiKey, model, messages, timeoutMs = AI_REQUEST_TIMEOUT_MS, signal = null }) {
   const includeTemp = !modelDisallowsTemperature(model);
-  const primaryBody = {
+
+  // 优先开启 stream: true（持续保活，避免中转站套 Cloudflare 触发 100s 504）
+  const streamPrimaryBody = {
     model,
     messages,
-    stream: false,
+    stream: true,
     ...(includeTemp ? { temperature: 0.2 } : {})
   };
 
   try {
-    return await requestOpenAiJson(fetchImpl, candidateUrls, {
+    const res = await requestOpenAiResponse(fetchImpl, candidateUrls, {
       method: 'POST',
       apiKey,
       timeoutMs,
-      body: primaryBody
+      idleTimeoutMs: AI_IDLE_TIMEOUT_MS,
+      signal,
+      body: streamPrimaryBody
     });
+    // 确保流式确实返回了有效文本，否则触发非流式降级
+    extractChatContent(res);
+    return res;
   } catch (firstErr) {
+    if (firstErr?.isCancelled || signal?.aborted) throw createAbortError();
     const status = Number(firstErr?.status || 0);
     const msgLower = String(firstErr?.message || '').toLowerCase();
-    const shouldFallbackMinimal =
-      (status === 400 || status === 422 || status === 500) &&
-      (
-        includeTemp ||
-        /temperature|stream|response_format|unsupported|invalid|parameter|param|system|role|unknown/i.test(msgLower)
-      );
 
-    if (!shouldFallbackMinimal) {
+    // 若明确是鉴权/余额/限流/模型不存在等业务错误，无需无意义降级，直接抛出清晰原因
+    if ([401, 402, 403, 429].includes(status) || /insufficient_quota|invalid_api_key|api key|unauthorized|model_not_found/i.test(msgLower)) {
       throw firstErr;
     }
 
     const systemRejected = /system/i.test(msgLower) && /role|not supported|unsupported|invalid/i.test(msgLower);
-    const fallbackMessages = systemRejected ? mergeSystemIntoUserMessages(messages) : messages;
+    const baseMessages = systemRejected ? mergeSystemIntoUserMessages(messages) : messages;
 
-    try {
-      return await requestOpenAiJson(fetchImpl, candidateUrls, {
-        method: 'POST',
-        apiKey,
-        timeoutMs,
-        body: {
-          model,
-          messages: fallbackMessages
-        }
-      });
-    } catch (secondErr) {
-      const secondMsg = String(secondErr?.message || '').toLowerCase();
-      if (!systemRejected && /system/i.test(secondMsg) && /role|not supported|unsupported|invalid/i.test(secondMsg)) {
-        return await requestOpenAiJson(fetchImpl, candidateUrls, {
+    // 降级路径 A：若仅因 temperature/system 参数报 400/422 且未提到 stream 不支持，先尝试去掉 temperature 保持 stream: true
+    if (includeTemp && (status === 400 || status === 422) && /temperature|system|parameter|param|unsupported|invalid/i.test(msgLower) && !/stream/i.test(msgLower)) {
+      try {
+        const res = await requestOpenAiResponse(fetchImpl, candidateUrls, {
           method: 'POST',
           apiKey,
           timeoutMs,
+          idleTimeoutMs: AI_IDLE_TIMEOUT_MS,
+          signal,
+          body: {
+            model,
+            messages: baseMessages,
+            stream: true
+          }
+        });
+        extractChatContent(res);
+        return res;
+      } catch (streamRetryErr) {
+        if (streamRetryErr?.isCancelled || signal?.aborted) throw createAbortError();
+        // 继续降级到非流式
+      }
+    }
+
+    // 降级路径 B：自动降级为非流式 stream: false（最小参数集）
+    try {
+      const res = await requestOpenAiResponse(fetchImpl, candidateUrls, {
+        method: 'POST',
+        apiKey,
+        timeoutMs,
+        signal,
+        body: {
+          model,
+          messages: baseMessages,
+          stream: false
+        }
+      });
+      return res;
+    } catch (nonStreamErr) {
+      if (nonStreamErr?.isCancelled || signal?.aborted) throw createAbortError();
+      const nonStreamMsg = String(nonStreamErr?.message || '').toLowerCase();
+      if (!systemRejected && /system/i.test(nonStreamMsg) && /role|not supported|unsupported|invalid/i.test(nonStreamMsg)) {
+        return await requestOpenAiResponse(fetchImpl, candidateUrls, {
+          method: 'POST',
+          apiKey,
+          timeoutMs,
+          signal,
           body: {
             model,
             messages: mergeSystemIntoUserMessages(messages)
           }
         });
       }
-      throw secondErr;
+      throw nonStreamErr;
     }
   }
 }
@@ -1060,10 +1236,371 @@ function buildOrganizeMessages(menusTree, cardsBatch, customPrompt, probeMap, du
   ];
 }
 
+function mergeBatchSuggestions(plans, menus, subMenus) {
+  const existingSubNamesByParent = new Map();
+  for (const sm of subMenus) {
+    const pid = Number(sm.parent_id);
+    if (!existingSubNamesByParent.has(pid)) existingSubNamesByParent.set(pid, new Set());
+    existingSubNamesByParent.get(pid).add(String(sm.name || '').trim().toLowerCase());
+  }
+  const menuById = new Map(menus.map(m => [Number(m.id), m]));
+  const merged = new Map();
+
+  for (const plan of plans) {
+    if (!plan?.suggested_sub_menus) continue;
+    for (const sug of plan.suggested_sub_menus) {
+      const key = `${sug.parent_menu_id}:${String(sug.name || '').trim().toLowerCase()}`;
+      if (existingSubNamesByParent.get(sug.parent_menu_id)?.has(String(sug.name || '').trim().toLowerCase())) continue;
+      if (!merged.has(key)) {
+        merged.set(key, {
+          parent_menu_id: sug.parent_menu_id,
+          parent_menu_name: menuById.get(sug.parent_menu_id)?.name || sug.parent_menu_name,
+          name: sug.name,
+          reason: sug.reason,
+          card_ids: [...sug.card_ids],
+          card_titles: [...sug.card_titles]
+        });
+      } else {
+        const prev = merged.get(key);
+        const existingIds = new Set(prev.card_ids);
+        sug.card_ids.forEach((id, idx) => {
+          if (!existingIds.has(id)) {
+            existingIds.add(id);
+            prev.card_ids.push(id);
+            prev.card_titles.push(sug.card_titles[idx] || `#${id}`);
+          }
+        });
+      }
+    }
+  }
+  return [...merged.values()].filter(s => s.card_ids.length >= 3);
+}
+
 function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {}) {
   const router = express.Router();
+  const tasks = new Map();
 
   ensureAiTable().catch(err => console.error('初始化 ai_configs 表失败:', err));
+
+  function pruneExpiredTasks() {
+    const now = Date.now();
+    for (const [id, task] of tasks.entries()) {
+      if (task.status !== 'running' && now - task.updatedAt > TASK_TTL_MS) {
+        tasks.delete(id);
+      }
+    }
+    if (tasks.size > MAX_TASK_RECORDS) {
+      const finished = [...tasks.entries()]
+        .filter(([, t]) => t.status !== 'running')
+        .sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+      for (const [id] of finished.slice(0, tasks.size - MAX_TASK_RECORDS)) {
+        tasks.delete(id);
+      }
+    }
+  }
+
+  function serializeTask(task) {
+    return {
+      taskId: task.id,
+      status: task.status,
+      stage: task.stage,
+      progress: task.progress,
+      message: task.message,
+      probed_done: task.probed_done,
+      probed_total: task.probed_total,
+      batch_done: task.batch_done,
+      batch_total: task.batch_total,
+      result: task.result,
+      error: task.error,
+      updated_at: task.updatedAt
+    };
+  }
+
+  async function resolveOrganizeParams(body = {}) {
+    await ensureAiTable();
+    let config = null;
+    if (body.config_id) {
+      config = await get('SELECT * FROM ai_configs WHERE id = ?', [Number(body.config_id)]);
+    } else {
+      config = await get('SELECT * FROM ai_configs WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
+    }
+
+    const baseUrl = body.base_url ? normalizeBaseUrl(body.base_url) : (config ? normalizeBaseUrl(config.base_url) : '');
+    const apiKey = String(body.api_key || config?.api_key || '').trim();
+    const model = String(body.model || config?.model || '').trim();
+    const customPrompt = String(body.prompt || '').trim();
+    const scope = String(body.scope || 'smart');
+    const enableProbe = body.enable_probe !== false;
+
+    if (!baseUrl || !apiKey) {
+      throw new Error('请先在步骤 1 添加并激活一个有效的 AI 接口配置');
+    }
+    if (!model) {
+      throw new Error('当前激活的 AI 接口尚未配置模型，请点击编辑按钮拉取或输入模型并保存');
+    }
+
+    return {
+      config,
+      baseUrl,
+      apiKey,
+      model,
+      customPrompt,
+      scope,
+      enableProbe,
+      menu_id: body.menu_id,
+      sub_menu_id: body.sub_menu_id,
+      card_ids: body.card_ids
+    };
+  }
+
+  async function executeOrganizePipeline(params, { signal = null, onProgress = null } = {}) {
+    const updateProgress = (patch) => {
+      if (typeof onProgress === 'function') onProgress(patch);
+    };
+
+    if (signal?.aborted) throw createAbortError();
+    updateProgress({ stage: 'preparing', progress: 3, message: '正在读取栏目与卡片数据...' });
+
+    const menus = await all('SELECT * FROM menus ORDER BY "order" ASC, id ASC');
+    const subMenus = await all('SELECT * FROM sub_menus ORDER BY "order" ASC, id ASC');
+    const menusTree = menus.map(m => ({
+      menu_id: m.id,
+      name: m.name,
+      sub_menus: subMenus
+        .filter(sm => sm.parent_id === m.id)
+        .map(sm => ({ sub_menu_id: sm.id, name: sm.name }))
+    }));
+
+    const baseCardSql = `
+      SELECT c.*, COALESCE(c.menu_id, sm.parent_id) AS effective_menu_id
+      FROM cards c
+      LEFT JOIN sub_menus sm ON c.sub_menu_id = sm.id
+      WHERE COALESCE(c.is_deleted, 0) = 0
+    `;
+
+    const allActiveCards = await all(`${baseCardSql} ORDER BY c."order" ASC, c.id ASC`);
+    const duplicateHints = detectDuplicateHints(allActiveCards);
+
+    let probeTargetCards = allActiveCards;
+    const cardIds = Array.isArray(params.card_ids)
+      ? params.card_ids.map(Number).filter(id => Number.isInteger(id) && id > 0)
+      : [];
+
+    if (cardIds.length) {
+      const idSet = new Set(cardIds);
+      probeTargetCards = allActiveCards.filter(c => idSet.has(c.id));
+    } else if (params.scope === 'current' && params.menu_id && params.menu_id !== 'all') {
+      const targetMenuId = Number(params.menu_id);
+      if (params.sub_menu_id && params.sub_menu_id !== 'all' && params.sub_menu_id !== 'main') {
+        const targetSubId = Number(params.sub_menu_id);
+        probeTargetCards = allActiveCards.filter(c => Number(c.sub_menu_id) === targetSubId);
+      } else if (params.sub_menu_id === 'main') {
+        probeTargetCards = allActiveCards.filter(c => Number(c.menu_id) === targetMenuId && !c.sub_menu_id);
+      } else {
+        probeTargetCards = allActiveCards.filter(c => Number(c.effective_menu_id) === targetMenuId);
+      }
+    }
+
+    if (!probeTargetCards.length) {
+      return {
+        updates: [],
+        changes: [],
+        recycles: [],
+        suggested_sub_menus: [],
+        probe_stats: { total: 0, reachable: 0, waf_403: 0, suspected_dead: 0, suspected_expired: 0 },
+        total_analyzed: 0,
+        total_probed: 0,
+        model: params.model,
+        used_default_prompt: !params.customPrompt,
+        message: '当前范围内没有可整理的卡片'
+      };
+    }
+
+    // 第一步：后端并发真实测活
+    let probeMap = new Map();
+    if (params.enableProbe) {
+      updateProgress({
+        stage: 'probing',
+        progress: 5,
+        probed_done: 0,
+        probed_total: probeTargetCards.length,
+        message: `正在测活 0/${probeTargetCards.length}...`
+      });
+      const probeFn = probeImpl || ((url, _card, sig) => probeUrl(url, { fetchImpl, signal: sig }));
+      try {
+        probeMap = await probeCardsConcurrently(probeTargetCards, probeFn, {
+          concurrency: PROBE_CONCURRENCY,
+          signal,
+          onProgress(done, total) {
+            const pct = 5 + Math.round((done / Math.max(1, total)) * 30);
+            updateProgress({
+              stage: 'probing',
+              progress: pct,
+              probed_done: done,
+              probed_total: total,
+              message: `正在测活 ${done}/${total}...`
+            });
+          }
+        });
+      } catch (probeErr) {
+        if (probeErr?.isCancelled || signal?.aborted) throw createAbortError();
+        throw new Error(`测活阶段失败：${probeErr.message}`);
+      }
+    }
+
+    const probeStats = {
+      total: probeTargetCards.length,
+      reachable: 0,
+      waf_403: 0,
+      suspected_dead: 0,
+      suspected_expired: 0
+    };
+    for (const result of probeMap.values()) {
+      if (result.verdict === 'ok' || result.verdict === 'skipped_private') probeStats.reachable++;
+      else if (result.verdict === 'waf_403') probeStats.waf_403++;
+      else if (result.verdict === 'suspected_domain_expired') probeStats.suspected_expired++;
+      else probeStats.suspected_dead++;
+    }
+
+    let aiCards = probeTargetCards;
+    if (params.scope === 'smart' && !params.customPrompt && !cardIds.length) {
+      const pendingMenuIds = new Set(menus.filter(m => m.name === '待归类' || m.name === 'Other').map(m => m.id));
+      aiCards = probeTargetCards.filter(c => {
+        const probe = probeMap.get(c.id);
+        const missingDesc = !String(c.desc || '').trim();
+        const uncategorized = !c.effective_menu_id || pendingMenuIds.has(Number(c.effective_menu_id));
+        const probeAbnormal = probe && probe.verdict !== 'ok' && probe.verdict !== 'skipped_private';
+        const isDup = duplicateHints.has(c.id);
+        return missingDesc || uncategorized || probeAbnormal || isDup;
+      });
+    }
+
+    const candidateUrls = buildChatCandidateUrls(params.baseUrl);
+    const batches = [];
+    for (let start = 0; start < aiCards.length; start += BATCH_SIZE) {
+      batches.push(aiCards.slice(start, start + BATCH_SIZE));
+    }
+
+    const batchPlans = new Array(batches.length);
+    const basePct = params.enableProbe ? 35 : 8;
+    const spanPct = 98 - basePct;
+    let nextBatchIndex = 0;
+    let completedBatches = 0;
+
+    if (batches.length > 0) {
+      updateProgress({
+        stage: 'organizing',
+        progress: basePct,
+        batch_done: 0,
+        batch_total: batches.length,
+        message: `正在 AI 整理第 1/${batches.length} 批（每批最多 ${BATCH_SIZE} 张，流式保活）...`
+      });
+    }
+
+    async function runSingleBatchWithRetry(batch, batchIdx) {
+      const batchNo = batchIdx + 1;
+      const totalBatches = batches.length;
+      const messages = buildOrganizeMessages(menusTree, batch, params.customPrompt, probeMap, duplicateHints);
+      let lastErr = null;
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        if (signal?.aborted) throw createAbortError();
+        try {
+          const completion = await callChatCompletionsWithFallback(fetchImpl, candidateUrls, {
+            apiKey: params.apiKey,
+            model: params.model,
+            messages,
+            timeoutMs: AI_REQUEST_TIMEOUT_MS,
+            signal
+          });
+          const { content, finishReason } = extractChatContent(completion);
+          let parsed;
+          try {
+            parsed = parseAiJson(content);
+          } catch (parseErr) {
+            if (finishReason === 'length') {
+              throw new Error('AI 输出因长度限制被截断 (finish_reason=length)');
+            }
+            throw parseErr;
+          }
+          return computeOrganizePlan(batch, parsed, menus, subMenus, probeMap);
+        } catch (err) {
+          if (err?.isCancelled || signal?.aborted) throw createAbortError();
+          lastErr = err;
+          const status = Number(err?.status || 0);
+          // 鉴权、余额或模型不存在错误不重试，直接报错
+          if ([401, 402, 403].includes(status) || /invalid_api_key|insufficient_quota|model_not_found/i.test(err?.message || '')) {
+            break;
+          }
+          if (attempt < 2) {
+            updateProgress({
+              stage: 'organizing',
+              message: `调用中转站第 ${batchNo}/${totalBatches} 批出现波动，正在自动重试（第 2 次尝试）...`
+            });
+          }
+        }
+      }
+
+      const wrapped = new Error(`调用中转站第 ${batchNo}/${totalBatches} 批失败：${lastErr?.message || '未知错误'}`);
+      wrapped.status = lastErr?.status;
+      throw wrapped;
+    }
+
+    async function runBatchWorker() {
+      while (nextBatchIndex < batches.length) {
+        if (signal?.aborted) throw createAbortError();
+        const currentIdx = nextBatchIndex++;
+        const batch = batches[currentIdx];
+        updateProgress({
+          stage: 'organizing',
+          batch_done: completedBatches,
+          batch_total: batches.length,
+          message: `正在 AI 整理第 ${currentIdx + 1}/${batches.length} 批（已完成 ${completedBatches}/${batches.length} 批）...`
+        });
+        batchPlans[currentIdx] = await runSingleBatchWithRetry(batch, currentIdx);
+        completedBatches++;
+        const pct = basePct + Math.round((completedBatches / Math.max(1, batches.length)) * spanPct);
+        updateProgress({
+          stage: 'organizing',
+          progress: Math.min(98, pct),
+          batch_done: completedBatches,
+          batch_total: batches.length,
+          message: completedBatches < batches.length
+            ? `已完成第 ${completedBatches}/${batches.length} 批，正在整理下一批...`
+            : `全部 ${batches.length} 批 AI 整理完成，正在汇总 Diff 预览...`
+        });
+      }
+    }
+
+    if (batches.length > 0) {
+      const workerCount = Math.min(BATCH_CONCURRENCY, batches.length);
+      await Promise.all(Array.from({ length: workerCount }, () => runBatchWorker()));
+    }
+
+    if (signal?.aborted) throw createAbortError();
+
+    const aggregatedUpdates = [];
+    const aggregatedRecycles = [];
+    for (const plan of batchPlans) {
+      if (!plan) continue;
+      aggregatedUpdates.push(...plan.updates);
+      aggregatedRecycles.push(...plan.recycles);
+    }
+    const aggregatedSuggestions = mergeBatchSuggestions(batchPlans, menus, subMenus);
+
+    return {
+      updates: aggregatedUpdates,
+      changes: aggregatedUpdates,
+      recycles: aggregatedRecycles,
+      suggested_sub_menus: aggregatedSuggestions,
+      probe_stats: probeStats,
+      total_analyzed: aiCards.length,
+      total_probed: probeTargetCards.length,
+      batch_count: batches.length,
+      model: params.model,
+      used_default_prompt: !params.customPrompt
+    };
+  }
 
   // 获取所有 AI 配置
   router.get('/configs', auth, async (req, res) => {
@@ -1185,7 +1722,7 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
     }
   });
 
-  // 拉取模型列表
+  // 拉取模型列表（支持直接传表单中的 base_url + api_key，无需先保存配置）
   router.post('/models', auth, async (req, res) => {
     try {
       await ensureAiTable();
@@ -1199,7 +1736,7 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
         apiKey = apiKey || cfg.api_key;
       } else if (!baseUrl && !apiKey) {
         const active = await get('SELECT base_url, api_key FROM ai_configs WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
-        if (!active) return res.status(400).json({ message: '请先添加并激活一个 AI 接口配置' });
+        if (!active) return res.status(400).json({ message: '请先填写 API Base URL 和 API Key' });
         baseUrl = active.base_url;
         apiKey = active.api_key;
       }
@@ -1207,10 +1744,10 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
       if (!apiKey) return res.status(400).json({ message: '请输入 API Key' });
 
       const candidateUrls = buildModelsCandidateUrls(baseUrl);
-      const payload = await requestOpenAiJson(fetchImpl, candidateUrls, {
+      const payload = await requestOpenAiResponse(fetchImpl, candidateUrls, {
         method: 'GET',
         apiKey: String(apiKey).trim(),
-        timeoutMs: 20000
+        timeoutMs: 25000
       });
       const models = extractModels(payload);
       res.json({ models });
@@ -1219,186 +1756,117 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
     }
   });
 
-  // 执行后端测活 + AI 智能整理（仅返回 Diff 预览，不修改数据库）
-  router.post('/organize', auth, async (req, res) => {
+  // 1) 启动异步 AI 整理任务（立即返回 taskId，彻底避免 Cloudflare 100s 504）
+  router.post('/organize/start', auth, async (req, res) => {
     try {
-      await ensureAiTable();
-      let config = null;
-      if (req.body?.config_id) {
-        config = await get('SELECT * FROM ai_configs WHERE id = ?', [Number(req.body.config_id)]);
-      } else {
-        config = await get('SELECT * FROM ai_configs WHERE is_active = 1 ORDER BY id ASC LIMIT 1');
-      }
+      pruneExpiredTasks();
+      const params = await resolveOrganizeParams(req.body);
+      const taskId = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
-      const baseUrl = req.body?.base_url ? normalizeBaseUrl(req.body.base_url) : (config ? normalizeBaseUrl(config.base_url) : '');
-      const apiKey = String(req.body?.api_key || config?.api_key || '').trim();
-      const model = String(req.body?.model || config?.model || '').trim();
-      const customPrompt = String(req.body?.prompt || '').trim();
-      const scope = String(req.body?.scope || 'smart'); // smart | all | current
-      const enableProbe = req.body?.enable_probe !== false;
-
-      if (!baseUrl || !apiKey) {
-        return res.status(400).json({ message: '请先配置并选择一个有效的 AI 接口' });
-      }
-      if (!model) {
-        return res.status(400).json({ message: '请先选择或输入一个 AI 模型名称' });
-      }
-
-      const menus = await all('SELECT * FROM menus ORDER BY "order" ASC, id ASC');
-      const subMenus = await all('SELECT * FROM sub_menus ORDER BY "order" ASC, id ASC');
-      const menusTree = menus.map(m => ({
-        menu_id: m.id,
-        name: m.name,
-        sub_menus: subMenus
-          .filter(sm => sm.parent_id === m.id)
-          .map(sm => ({ sub_menu_id: sm.id, name: sm.name }))
-      }));
-
-      const baseCardSql = `
-        SELECT c.*, COALESCE(c.menu_id, sm.parent_id) AS effective_menu_id
-        FROM cards c
-        LEFT JOIN sub_menus sm ON c.sub_menu_id = sm.id
-        WHERE COALESCE(c.is_deleted, 0) = 0
-      `;
-
-      const allActiveCards = await all(`${baseCardSql} ORDER BY c."order" ASC, c.id ASC`);
-      const duplicateHints = detectDuplicateHints(allActiveCards);
-
-      let probeTargetCards = allActiveCards;
-      const cardIds = Array.isArray(req.body?.card_ids)
-        ? req.body.card_ids.map(Number).filter(id => Number.isInteger(id) && id > 0)
-        : [];
-
-      if (cardIds.length) {
-        const idSet = new Set(cardIds);
-        probeTargetCards = allActiveCards.filter(c => idSet.has(c.id));
-      } else if (scope === 'current' && req.body?.menu_id && req.body.menu_id !== 'all') {
-        const targetMenuId = Number(req.body.menu_id);
-        if (req.body?.sub_menu_id && req.body.sub_menu_id !== 'all' && req.body.sub_menu_id !== 'main') {
-          const targetSubId = Number(req.body.sub_menu_id);
-          probeTargetCards = allActiveCards.filter(c => Number(c.sub_menu_id) === targetSubId);
-        } else if (req.body?.sub_menu_id === 'main') {
-          probeTargetCards = allActiveCards.filter(c => Number(c.menu_id) === targetMenuId && !c.sub_menu_id);
-        } else {
-          probeTargetCards = allActiveCards.filter(c => Number(c.effective_menu_id) === targetMenuId);
-        }
-      }
-
-      if (!probeTargetCards.length) {
-        return res.json({
-          updates: [],
-          changes: [],
-          recycles: [],
-          suggested_sub_menus: [],
-          probe_stats: { total: 0, reachable: 0, waf_403: 0, suspected_dead: 0, suspected_expired: 0 },
-          total_analyzed: 0,
-          model,
-          used_default_prompt: !customPrompt,
-          message: '当前范围内没有可整理的卡片'
-        });
-      }
-
-      // 第一步：后端并发真实测活
-      const probeFn = probeImpl || (url => probeUrl(url, { fetchImpl }));
-      const probeMap = enableProbe
-        ? await probeCardsConcurrently(probeTargetCards, probeFn, PROBE_CONCURRENCY)
-        : new Map();
-
-      const probeStats = {
-        total: probeTargetCards.length,
-        reachable: 0,
-        waf_403: 0,
-        suspected_dead: 0,
-        suspected_expired: 0
+      const task = {
+        id: taskId,
+        status: 'running',
+        stage: 'preparing',
+        progress: 2,
+        message: '任务已启动，正在准备数据...',
+        probed_done: 0,
+        probed_total: 0,
+        batch_done: 0,
+        batch_total: 0,
+        result: null,
+        error: null,
+        abortController: new AbortController(),
+        createdAt: Date.now(),
+        updatedAt: Date.now()
       };
-      for (const result of probeMap.values()) {
-        if (result.verdict === 'ok' || result.verdict === 'skipped_private') probeStats.reachable++;
-        else if (result.verdict === 'waf_403') probeStats.waf_403++;
-        else if (result.verdict === 'suspected_domain_expired') probeStats.suspected_expired++;
-        else probeStats.suspected_dead++;
-      }
+      tasks.set(taskId, task);
 
-      // 根据范围决定交给 AI 分析的卡片集合
-      let aiCards = probeTargetCards;
-      if (scope === 'smart' && !customPrompt && !cardIds.length) {
-        const pendingMenuIds = new Set(menus.filter(m => m.name === '待归类' || m.name === 'Other').map(m => m.id));
-        aiCards = probeTargetCards.filter(c => {
-          const probe = probeMap.get(c.id);
-          const missingDesc = !String(c.desc || '').trim();
-          const uncategorized = !c.effective_menu_id || pendingMenuIds.has(Number(c.effective_menu_id));
-          const probeAbnormal = probe && probe.verdict !== 'ok' && probe.verdict !== 'skipped_private';
-          const isDup = duplicateHints.has(c.id);
-          return missingDesc || uncategorized || probeAbnormal || isDup;
-        });
-      }
-
-      const candidateUrls = buildChatCandidateUrls(baseUrl);
-      const batches = [];
-      for (let start = 0; start < aiCards.length; start += BATCH_SIZE) {
-        batches.push(aiCards.slice(start, start + BATCH_SIZE));
-      }
-
-      const batchPlans = new Array(batches.length);
-      let nextBatchIndex = 0;
-
-      async function runBatchWorker() {
-        while (nextBatchIndex < batches.length) {
-          const currentIdx = nextBatchIndex++;
-          const batch = batches[currentIdx];
-          const messages = buildOrganizeMessages(menusTree, batch, customPrompt, probeMap, duplicateHints);
-          try {
-            const completion = await callChatCompletionsWithFallback(fetchImpl, candidateUrls, {
-              apiKey,
-              model,
-              messages,
-              timeoutMs: AI_REQUEST_TIMEOUT_MS
-            });
-            const { content, finishReason } = extractChatContent(completion);
-            let parsed;
-            try {
-              parsed = parseAiJson(content);
-            } catch (parseErr) {
-              if (finishReason === 'length') {
-                throw new Error(`AI 输出因长度限制被截断 (finish_reason=length)，请缩小整理范围或更换输出更长的模型`);
-              }
-              throw parseErr;
+      // 后台异步执行，绝不阻塞 HTTP 响应
+      setImmediate(async () => {
+        try {
+          const result = await executeOrganizePipeline(params, {
+            signal: task.abortController.signal,
+            onProgress(patch) {
+              if (task.status !== 'running') return;
+              Object.assign(task, patch, { updatedAt: Date.now() });
             }
-            batchPlans[currentIdx] = computeOrganizePlan(batch, parsed, menus, subMenus, probeMap);
-          } catch (batchErr) {
-            const prefix = batches.length > 1 ? `[第 ${currentIdx + 1}/${batches.length} 批] ` : '';
-            const wrapped = new Error(`${prefix}${batchErr.message}`);
-            wrapped.status = batchErr.status;
-            throw wrapped;
+          });
+          if (task.status === 'cancelled' || task.abortController.signal.aborted) {
+            task.status = 'cancelled';
+            task.stage = 'cancelled';
+            task.message = '任务已取消';
+            task.updatedAt = Date.now();
+            return;
           }
+          task.status = 'completed';
+          task.stage = 'completed';
+          task.progress = 100;
+          task.message = '整理完成，请预览确认变更';
+          task.result = result;
+          task.updatedAt = Date.now();
+        } catch (err) {
+          if (err?.isCancelled || task.status === 'cancelled' || task.abortController.signal.aborted) {
+            task.status = 'cancelled';
+            task.stage = 'cancelled';
+            task.message = '任务已取消';
+            task.updatedAt = Date.now();
+            return;
+          }
+          task.status = 'failed';
+          task.stage = 'failed';
+          task.error = err?.message || '未知错误';
+          task.message = `AI 智能整理失败：${task.error}`;
+          task.updatedAt = Date.now();
         }
-      }
-
-      if (batches.length > 0) {
-        const workerCount = Math.min(BATCH_CONCURRENCY, batches.length);
-        await Promise.all(Array.from({ length: workerCount }, () => runBatchWorker()));
-      }
-
-      const aggregatedUpdates = [];
-      const aggregatedRecycles = [];
-      const aggregatedSuggestions = [];
-      for (const plan of batchPlans) {
-        if (!plan) continue;
-        aggregatedUpdates.push(...plan.updates);
-        aggregatedRecycles.push(...plan.recycles);
-        aggregatedSuggestions.push(...plan.suggested_sub_menus);
-      }
+      });
 
       res.json({
-        updates: aggregatedUpdates,
-        changes: aggregatedUpdates,
-        recycles: aggregatedRecycles,
-        suggested_sub_menus: aggregatedSuggestions,
-        probe_stats: probeStats,
-        total_analyzed: aiCards.length,
-        total_probed: probeTargetCards.length,
-        model,
-        used_default_prompt: !customPrompt
+        taskId,
+        status: task.status,
+        stage: task.stage,
+        progress: task.progress,
+        message: task.message
       });
+    } catch (err) {
+      res.status(400).json({ message: err.message || '启动 AI 整理任务失败' });
+    }
+  });
+
+  // 2) 轮询异步任务进度与结果
+  router.get('/organize/status/:taskId', auth, (req, res) => {
+    pruneExpiredTasks();
+    const task = tasks.get(req.params.taskId);
+    if (!task) {
+      return res.status(404).json({ message: '任务不存在或已过期，请重新发起整理' });
+    }
+    res.json(serializeTask(task));
+  });
+
+  // 3) 中途取消异步任务
+  router.post('/organize/cancel/:taskId', auth, (req, res) => {
+    pruneExpiredTasks();
+    const task = tasks.get(req.params.taskId);
+    if (!task) {
+      return res.status(404).json({ message: '任务不存在或已结束' });
+    }
+    if (task.status === 'running') {
+      task.status = 'cancelled';
+      task.stage = 'cancelled';
+      task.message = '任务已取消';
+      task.updatedAt = Date.now();
+      task.abortController.abort();
+    }
+    res.json(serializeTask(task));
+  });
+
+  // 兼容同步入口（内部复用同一流式小批次管线）
+  router.post('/organize', auth, async (req, res) => {
+    try {
+      const params = await resolveOrganizeParams(req.body);
+      const result = await executeOrganizePipeline(params);
+      res.json(result);
     } catch (err) {
       const upstreamStatus = Number(err?.status || 0);
       res.status(400).json({
@@ -1409,7 +1877,7 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
     }
   });
 
-  // 应用用户勾选确认的 AI 整理更改（支持更新卡片 + 将失效/重复卡片移入回收站）
+  // 应用用户勾选确认的 AI 整理更改
   router.post('/apply', auth, async (req, res) => {
     const updates = Array.isArray(req.body?.updates)
       ? req.body.updates
@@ -1494,6 +1962,7 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
 
 const defaultRouter = createAiRouter();
 defaultRouter.createAiRouter = createAiRouter;
+defaultRouter.BATCH_SIZE = BATCH_SIZE;
 defaultRouter.normalizeBaseUrl = normalizeBaseUrl;
 defaultRouter.buildModelsCandidateUrls = buildModelsCandidateUrls;
 defaultRouter.buildChatCandidateUrls = buildChatCandidateUrls;

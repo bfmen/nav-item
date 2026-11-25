@@ -63,6 +63,9 @@ export const updateAiConfig = (id, data) => axios.put(`${BASE}/ai/configs/${id}`
 export const activateAiConfig = (id) => axios.put(`${BASE}/ai/configs/${id}/activate`);
 export const deleteAiConfig = (id) => axios.delete(`${BASE}/ai/configs/${id}`);
 export const fetchAiModels = (data) => axios.post(`${BASE}/ai/models`, data, { timeout: 30000 });
+export const startAiOrganize = (data) => axios.post(`${BASE}/ai/organize/start`, data, { timeout: 30000 });
+export const getAiOrganizeStatus = (taskId) => axios.get(`${BASE}/ai/organize/status/${encodeURIComponent(taskId)}`, { timeout: 20000 });
+export const cancelAiOrganize = (taskId) => axios.post(`${BASE}/ai/organize/cancel/${encodeURIComponent(taskId)}`, {}, { timeout: 15000 });
 export const runAiOrganize = (data) => axios.post(`${BASE}/ai/organize`, data, { timeout: 300000 });
 export const applyAiOrganize = (payload) => axios.post(`${BASE}/ai/apply`, Array.isArray(payload) ? { updates: payload } : payload, { timeout: 60000 });
 

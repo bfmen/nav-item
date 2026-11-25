@@ -141,17 +141,50 @@ test('第三方中转站响应兼容、JSON 容错解析与参数自动降级重
   const sseParsed = aiModule.parseSseStreamText(sseText);
   assert.equal(sseParsed.content, '{"updates":[]}');
 
-  // 4. 中转站拒绝 temperature 参数返回 400 时自动降级为最小参数重试成功
+  // 4. 优先 stream: true 流式拼接（含跨块拆分的 SSE 帧）以及不支持流式时自动降级为 stream: false
+  const streamBodies = [];
+  const encoder = new TextEncoder();
+  const makeStreamResponse = (chunks) => ({
+    ok: true,
+    status: 200,
+    headers: new Map([['content-type', 'text/event-stream']]),
+    body: new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      }
+    })
+  });
+
+  const streamRes = await aiModule.callChatCompletionsWithFallback(
+    async (_url, opts) => {
+      const body = JSON.parse(opts.body);
+      streamBodies.push(body);
+      const sseLine = `data: ${JSON.stringify({ choices: [{ delta: { content: '{"updates":[{"id":1,"title":"YouTube"}],"recycles":[]}' }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`;
+      return makeStreamResponse([sseLine.slice(0, 42), sseLine.slice(42)]);
+    },
+    ['https://relay.test/v1/chat/completions'],
+    {
+      apiKey: 'sk-test',
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }]
+    }
+  );
+  assert.equal(streamBodies.length, 1);
+  assert.equal(streamBodies[0].stream, true);
+  assert.equal(aiModule.parseAiJson(streamRes.choices[0].message.content).updates[0].title, 'YouTube');
+
+  // 中转站拒绝 stream: true 时自动降级为 stream: false 重试成功
   const seenBodies = [];
   const fallbackResult = await aiModule.callChatCompletionsWithFallback(
     async (_url, opts) => {
       const body = JSON.parse(opts.body);
       seenBodies.push(body);
-      if ('temperature' in body) {
+      if (body.stream === true) {
         return {
           ok: false,
           status: 400,
-          text: async () => JSON.stringify({ error: { message: 'Unsupported parameter: temperature' } })
+          text: async () => JSON.stringify({ error: { message: 'stream parameter is not supported' } })
         };
       }
       return {
@@ -168,9 +201,137 @@ test('第三方中转站响应兼容、JSON 容错解析与参数自动降级重
     }
   );
   assert.equal(seenBodies.length, 2);
-  assert.equal(seenBodies[0].temperature, 0.2);
-  assert.equal('temperature' in seenBodies[1], false);
+  assert.equal(seenBodies[0].stream, true);
+  assert.equal(seenBodies[1].stream, false);
   assert.equal(fallbackResult.choices[0].message.content, '{"updates":[],"recycles":[]}');
+});
+
+test('异步任务队列 start/status/cancel、小批次拆分合并与未保存配置直接拉取模型', async () => {
+  const db = await initMemoryDb();
+  let server;
+  const moduleKeys = ['../routes/ai'];
+  const authCookie = `${COOKIE_NAME}=${jwt.sign({ id: 1, username: 'admin' }, JWT_SECRET, { expiresIn: 3600 })}`;
+
+  try {
+    await run(db, 'DELETE FROM cards');
+    await run(db, 'DELETE FROM sub_menus');
+    await run(db, 'DELETE FROM menus');
+
+    const m1 = (await run(db, 'INSERT INTO menus (name, "order") VALUES (?, ?)', ['Home', 1])).lastID;
+    // 插入 32 张卡片，验证按 BATCH_SIZE=15 自动拆分为 3 批并合并结果
+    const cardIds = [];
+    for (let i = 1; i <= 32; i++) {
+      const id = (await run(
+        db,
+        'INSERT INTO cards (menu_id, sub_menu_id, title, url, desc, "order", is_deleted) VALUES (?, NULL, ?, ?, "", ?, 0)',
+        [m1, `site${i}`, `https://site${i}.example`, i]
+      )).lastID;
+      cardIds.push(id);
+    }
+
+    require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: db };
+    delete require.cache[require.resolve('../routes/ai')];
+    const { createAiRouter, BATCH_SIZE } = require('../routes/ai');
+    assert.ok(BATCH_SIZE >= 12 && BATCH_SIZE <= 15);
+
+    const seenBatchSizes = [];
+    const mockFetch = async (url, opts = {}) => {
+      if (url.endsWith('/v1/models')) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ data: [{ id: 'gpt-4o-mini' }, { id: 'claude-3-5-sonnet' }] })
+        };
+      }
+      if (url.endsWith('/v1/chat/completions')) {
+        const body = JSON.parse(opts.body);
+        const payload = JSON.parse(body.messages[body.messages.length - 1].content);
+        seenBatchSizes.push(payload.cards.length);
+        const updates = payload.cards.map(c => ({
+          id: c.id,
+          menu_id: m1,
+          sub_menu_id: null,
+          title: c.title.toUpperCase(),
+          desc: `站点 ${c.id} 说明`,
+          reason: '补全描述'
+        }));
+        const contentStr = JSON.stringify({ updates, recycles: [], suggested_sub_menus: [] });
+        return {
+          ok: true,
+          status: 200,
+          text: async () => `data: ${JSON.stringify({ choices: [{ delta: { content: contentStr }, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`
+        };
+      }
+      return { ok: false, status: 404, text: async () => 'Not Found' };
+    };
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/ai', createAiRouter({
+      fetchImpl: mockFetch,
+      probeImpl: async () => ({ reachable: true, status: 200, page_title: 'OK', cf_detected: false, error_code: '', verdict: 'ok', summary: 'HTTP 200 正常' })
+    }));
+
+    server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const api = (endpoint, method = 'GET', body = null) => fetch(`${base}${endpoint}`, {
+      method,
+      headers: {
+        Cookie: authCookie,
+        ...(body ? { 'Content-Type': 'application/json' } : {})
+      },
+      ...(body ? { body: JSON.stringify(body) } : {})
+    });
+
+    // 1. 无需先保存配置，直接用表单的 base_url + api_key 拉取模型列表
+    const rawModelsRes = await (await api('/api/ai/models', 'POST', {
+      base_url: 'https://unsaved-relay.test',
+      api_key: 'sk-unsaved'
+    })).json();
+    assert.deepEqual(rawModelsRes.models, ['claude-3-5-sonnet', 'gpt-4o-mini']);
+
+    // 2. 创建未配置模型的接口，直接启动应返回明确引导错误
+    const noModelCfg = await (await api('/api/ai/configs', 'POST', {
+      name: '未配模型接口',
+      base_url: 'https://relay.test/v1',
+      api_key: 'sk-test'
+    })).json();
+    const rejectStart = await api('/api/ai/organize/start', 'POST', { config_id: noModelCfg.data.id });
+    assert.equal(rejectStart.status, 400);
+    assert.match((await rejectStart.json()).message, /尚未配置模型/);
+
+    // 3. 更新接口保存模型后，启动异步任务并轮询至完成
+    await api(`/api/ai/configs/${noModelCfg.data.id}`, 'PUT', { model: 'gpt-4o-mini' });
+    const startRes = await (await api('/api/ai/organize/start', 'POST', {
+      config_id: noModelCfg.data.id,
+      scope: 'all'
+    })).json();
+    assert.ok(startRes.taskId);
+    assert.equal(startRes.status, 'running');
+
+    let statusData = null;
+    for (let i = 0; i < 40; i++) {
+      statusData = await (await api(`/api/ai/organize/status/${startRes.taskId}`)).json();
+      if (statusData.status !== 'running') break;
+      await new Promise(r => setTimeout(r, 25));
+    }
+
+    assert.equal(statusData.status, 'completed');
+    assert.equal(statusData.progress, 100);
+    assert.equal(statusData.result.updates.length, 32);
+    assert.equal(statusData.result.batch_count, 3);
+    assert.deepEqual(seenBatchSizes.sort((a, b) => b - a), [15, 15, 2]);
+
+    // 4. 验证取消接口可正常取消任务
+    const cancelRes = await api(`/api/ai/organize/cancel/${startRes.taskId}`, 'POST');
+    assert.equal(cancelRes.status, 200);
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    delete require.cache[dbPath];
+    for (const key of moduleKeys) delete require.cache[require.resolve(key)];
+    await close(db);
+  }
 });
 
 test('AI 整理方案计算：防硬塞 needs_review、回收站分离与 >=3 张卡片才允许建议新增子菜单', () => {
