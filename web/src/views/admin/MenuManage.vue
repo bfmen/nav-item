@@ -17,8 +17,11 @@
         </button>
       </div>
       <div class="header-meta">
-        <span class="header-tip">↕ 按住左侧 ⋮⋮ 手柄可拖拽调整主菜单 / 子菜单顺序</span>
+        <span class="header-tip">↕ 拖动左侧 ⋮⋮ 手柄可调整顺序</span>
         <span v-if="toastMessage" :class="['header-toast', toastType]">{{ toastMessage }}</span>
+        <button class="btn btn-ai" @click="showAiMenuModal = true">
+          ✨ AI 整理栏目
+        </button>
       </div>
     </div>
 
@@ -144,11 +147,18 @@
         </div>
       </div>
     </div>
+
+    <AiMenuOrganizeModal
+      :visible="showAiMenuModal"
+      @close="showAiMenuModal = false"
+      @applied="onAiMenuApplied"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount } from 'vue';
+import AiMenuOrganizeModal from '../../components/AiMenuOrganizeModal.vue';
 import {
   getMenus,
   addMenu as apiAddMenu,
@@ -163,6 +173,7 @@ import {
 
 const menus = ref([]);
 const newMenuName = ref('');
+const showAiMenuModal = ref(false);
 const expandedIds = ref(new Set());
 const toastMessage = ref('');
 const toastType = ref('success');
@@ -209,6 +220,11 @@ function toggleSubMenu(menuId) {
 async function loadMenus() {
   const res = await getMenus();
   menus.value = res.data || [];
+}
+
+async function onAiMenuApplied(data) {
+  await loadMenus();
+  showToast(data?.message || '✨ AI 栏目整理已应用');
 }
 
 async function addMenu() {
@@ -746,6 +762,18 @@ function onSubMenuDragEnd() {
 
 .btn-add:hover {
   background: rgba(255, 255, 255, 0.32);
+}
+
+.btn-ai {
+  background: linear-gradient(135deg, #f59e0b 0%, #ec4899 100%);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(236, 72, 153, 0.35);
+}
+
+.btn-ai:hover {
+  filter: brightness(1.06);
+  transform: translateY(-1px);
 }
 
 .btn-outline {

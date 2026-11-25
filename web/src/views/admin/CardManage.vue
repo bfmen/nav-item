@@ -606,8 +606,9 @@ async function onAiApplied(result) {
   window.dispatchEvent(new Event('recycle:updated'));
   const updated = typeof result === 'number' ? result : (result?.updated || 0);
   const recycled = typeof result === 'object' ? (result?.recycled || 0) : 0;
+  const backupFile = typeof result === 'object' ? result?.backup?.filename : '';
   if (updated || recycled) {
-    showToast(`✨ AI 整理已应用：更新 ${updated} 张，移入回收站 ${recycled} 张`);
+    showToast(`✨ AI 整理已应用：更新 ${updated} 张，移入回收站 ${recycled} 张${backupFile ? `（已云端备份）` : ''}`);
   }
 }
 </script>

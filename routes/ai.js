@@ -4,6 +4,7 @@ const dns = require('dns').promises;
 const ipaddr = require('ipaddr.js');
 const db = require('../db');
 const auth = require('./authMiddleware');
+const backupRoutes = require('./backup');
 
 const RECYCLE_REASONS = new Set(['dead_link', 'domain_expired', 'duplicate', 'manual']);
 
@@ -720,7 +721,7 @@ function formatCategoryLabel(menuId, subMenuId, menuById, subMenuById) {
   return '未分类';
 }
 
-function computeOrganizePlan(cards, rawOutput, menus, subMenus, probeMap = new Map()) {
+function computeOrganizePlan(cards, rawOutput, menus, subMenus, probeMap = new Map(), { protectMainDirect = false } = {}) {
   const menuById = new Map(menus.map(m => [Number(m.id), m]));
   const subMenuById = new Map(subMenus.map(sm => [Number(sm.id), sm]));
   const cardById = new Map(cards.map(c => [Number(c.id), c]));
@@ -806,6 +807,12 @@ function computeOrganizePlan(cards, rawOutput, menus, subMenus, probeMap = new M
         newMenuId = candidateMenu;
         newSubMenuId = null;
       }
+    }
+
+    // 开启「保护主菜单直属卡片」时，硬性阻止将原主菜单直属卡片（sub_menu_id 为空）移走或降级到子菜单
+    if (protectMainDirect && oldMenuId !== null && oldSubMenuId === null) {
+      newMenuId = oldMenuId;
+      newSubMenuId = null;
     }
 
     const oldTitle = String(card.title || '').trim();
@@ -1176,34 +1183,68 @@ async function callChatCompletionsWithFallback(fetchImpl, candidateUrls, { apiKe
   }
 }
 
-function buildOrganizeMessages(menusTree, cardsBatch, customPrompt, probeMap, duplicateHints) {
-  const requirement = customPrompt && customPrompt.trim()
-    ? `请严格按照以下用户自定义要求整理导航卡片（仍需遵守不捏造不存在栏目 ID 的硬性约束，并结合 probe 测活结果处理死链）：\n${customPrompt.trim()}`
-    : DEFAULT_ORGANIZE_PROMPT;
-
+function buildOrganizeMessages(menusTree, cardsBatch, customPrompt, probeMap, duplicateHints, { scope = 'smart', protectMainDirect = true } = {}) {
+  const isCustomMode = scope === 'custom';
   const hasPendingMenu = menusTree.some(m =>
     m.name === '待归类' || (m.sub_menus || []).some(sm => sm.name === '待归类')
   );
 
-  const systemPrompt = [
-    '你是一个严谨、克制的网站导航站内容整理与死链审核助手。',
-    '你必须只返回严格合法的 JSON 对象，不要包含任何额外解释文字。',
-    '输出 JSON 结构必须为：',
-    '{',
-    '  "updates": [{"id": 1, "menu_id": 2, "sub_menu_id": null, "title": "新标题", "desc": "15字以内中文描述", "needs_review": false, "reason": "简短说明"}],',
-    '  "recycles": [{"id": 2, "recycle_reason": "dead_link|domain_expired|duplicate", "reason": "具体判定依据"}],',
-    '  "suggested_sub_menus": [{"parent_menu_id": 5, "name": "建议子菜单名", "reason": "发现>=3张同类卡片的理由", "card_ids": [10, 11, 12]}]',
-    '}',
-    '硬性约束：',
-    '1. id 必须来自输入卡片列表；同一张卡片不能同时出现在 updates 和 recycles 中。',
-    '2. menu_id 和 sub_menu_id 必须严格来自提供的 menus 列表，绝不可编造不存在的 ID 或改名。',
-    '3. 若归入某子菜单，必须填写对应的 menu_id（父主菜单ID）和 sub_menu_id（子菜单ID）；若直属主菜单，sub_menu_id 必须为 null。',
-    `4. 当前数据库${hasPendingMenu ? '存在' : '不存在'}「待归类」栏目；若某卡片无合适分类或存在跨界歧义，${hasPendingMenu ? '请归入「待归类」' : '请保持原分类不变并设置 needs_review: true'}，绝不强行硬塞。`,
-    '5. 仅当某类新主题有 ≥3 张卡片且现有栏目无法容纳时才填写 suggested_sub_menus，否则返回空数组 []。',
-    '6. 仅返回有修改、需要复核（needs_review: true）或需移入回收站的卡片；无需处理的卡片不要输出。'
-  ].join('\n');
+  let requirement;
+  let systemPrompt;
+
+  if (isCustomMode) {
+    requirement = `请完全严格按照以下用户自定义指令执行导航卡片整理：\n${String(customPrompt || '').trim()}`;
+    systemPrompt = [
+      '你是一个高效的网站导航站自定义整理执行助手。当前处于「自定义 AI 整理模式」，请完全优先并严格执行用户的自定义指令，解除默认防乱保守限制。',
+      '【交互语义说明】输入卡片中 sub_menu_id 为 null 的卡片属于「主菜单直属」卡片，前台点击主菜单（尤其是 Home）时会直接展示，属于高频常用入口。',
+      '你必须只返回严格合法的 JSON 对象，不要包含任何额外解释文字。',
+      '输出 JSON 结构必须为：',
+      '{',
+      '  "updates": [{"id": 1, "menu_id": 2, "sub_menu_id": null, "title": "新标题", "desc": "简洁描述", "needs_review": false, "reason": "执行了哪条自定义指令"}],',
+      '  "recycles": [{"id": 2, "recycle_reason": "dead_link|domain_expired|duplicate", "reason": "具体判定依据"}],',
+      '  "suggested_sub_menus": [{"parent_menu_id": 5, "name": "建议子菜单名", "reason": "理由", "card_ids": [10, 11, 12]}]',
+      '}',
+      '硬性技术约束：',
+      '1. id 必须来自输入卡片列表；同一张卡片不能同时出现在 updates 和 recycles 中。',
+      '2. menu_id 和 sub_menu_id 必须严格来自提供的 menus 列表，绝不可编造不存在的 ID。',
+      '3. 若归入某子菜单，必须填写对应的 menu_id（父主菜单ID）和 sub_menu_id（子菜单ID）；若设为主菜单直属，sub_menu_id 必须为 null。',
+      protectMainDirect
+        ? '4. 【主菜单直属保护已开启】对于当前 sub_menu_id 为 null 的主菜单直属卡片，不要将其移走或降级到子菜单（仅可修改标题、描述或按测活标记死链）。'
+        : '4. 【主菜单直属可按指令调整】若用户指令要求移动、精简或调整 Home 等主菜单直属卡片，请严格按指令调整其 menu_id / sub_menu_id。',
+      '5. 若输入中包含 probe 测活结果且用户未禁止死链处理，对确认死链/停用/重复卡片可放入 recycles（注意 403/CF 盾勿误杀）。',
+      '6. 仅返回有修改或需移入回收站的卡片；无需处理的卡片不要输出。'
+    ].join('\n');
+  } else {
+    requirement = customPrompt && customPrompt.trim()
+      ? `请严格按照以下用户自定义要求整理导航卡片（仍需遵守不捏造不存在栏目 ID 的硬性约束，并结合 probe 测活结果处理死链）：\n${customPrompt.trim()}`
+      : DEFAULT_ORGANIZE_PROMPT;
+
+    systemPrompt = [
+      '你是一个严谨、克制的网站导航站内容整理与死链审核助手。',
+      '【交互语义说明】输入卡片中 sub_menu_id 为 null 的卡片属于「主菜单直属」卡片，会在前台点击主菜单（尤其是 Home）时直接展示，属于用户高频常用入口。',
+      '你必须只返回严格合法的 JSON 对象，不要包含任何额外解释文字。',
+      '输出 JSON 结构必须为：',
+      '{',
+      '  "updates": [{"id": 1, "menu_id": 2, "sub_menu_id": null, "title": "新标题", "desc": "15字以内中文描述", "needs_review": false, "reason": "简短说明"}],',
+      '  "recycles": [{"id": 2, "recycle_reason": "dead_link|domain_expired|duplicate", "reason": "具体判定依据"}],',
+      '  "suggested_sub_menus": [{"parent_menu_id": 5, "name": "建议子菜单名", "reason": "发现>=3张同类卡片的理由", "card_ids": [10, 11, 12]}]',
+      '}',
+      '硬性约束：',
+      '1. id 必须来自输入卡片列表；同一张卡片不能同时出现在 updates 和 recycles 中。',
+      '2. menu_id 和 sub_menu_id 必须严格来自提供的 menus 列表，绝不可编造不存在的 ID 或改名。',
+      '3. 若归入某子菜单，必须填写对应的 menu_id（父主菜单ID）和 sub_menu_id（子菜单ID）；若直属主菜单，sub_menu_id 必须为 null。',
+      protectMainDirect
+        ? '4. 【主菜单直属保护已开启】严禁将当前 sub_menu_id 为 null 的主菜单直属卡片擅自降级移入子菜单或挪到其他主菜单（仅允许为其补全简短中文描述、规范名称大小写及进行死链/重复检测）。'
+        : '4. 【主菜单直属保护已关闭】可按内容相关性将主菜单直属卡片合理归入更匹配的主菜单或子菜单。',
+      `5. 当前数据库${hasPendingMenu ? '存在' : '不存在'}「待归类」栏目；若某卡片无合适分类或存在跨界歧义，${hasPendingMenu ? '请归入「待归类」' : '请保持原分类不变并设置 needs_review: true'}，绝不强行硬塞。`,
+      '6. 仅当某类新主题有 ≥3 张卡片且现有栏目无法容纳时才填写 suggested_sub_menus，否则返回空数组 []。',
+      '7. 仅返回有修改、需要复核（needs_review: true）或需移入回收站的卡片；无需处理的卡片不要输出。'
+    ].join('\n');
+  }
 
   const userPayload = {
+    mode: isCustomMode ? 'custom' : scope,
+    protect_main_direct: Boolean(protectMainDirect),
     requirement,
     menus: menusTree,
     cards: cardsBatch.map(c => {
@@ -1213,6 +1254,7 @@ function buildOrganizeMessages(menusTree, cardsBatch, customPrompt, probeMap, du
         id: c.id,
         menu_id: c.effective_menu_id || c.menu_id || null,
         sub_menu_id: c.sub_menu_id || null,
+        is_main_direct: !c.sub_menu_id,
         title: c.title,
         url: c.url,
         desc: c.desc || '',
@@ -1234,6 +1276,276 @@ function buildOrganizeMessages(menusTree, cardsBatch, customPrompt, probeMap, du
     { role: 'system', content: systemPrompt },
     { role: 'user', content: JSON.stringify(userPayload) }
   ];
+}
+
+const DEFAULT_MENU_ORGANIZE_PROMPT = [
+  '请对当前导航站的主菜单和子菜单结构进行专业优化：',
+  '1. 规范名称大小写与排版格式（例如 Al chat -> AI Chat，Ai Stuff -> AI Stuff，ai自建 -> AI 自建，dev tools -> Dev Tools，ios -> iOS），保持简洁易懂；',
+  '2. 优化主菜单和各父菜单下子菜单的排列顺序（高频常用靠前，如 Home/常用放首位，Other/其他放末尾）；',
+  '3. 识别含义高度重叠或功能重复的子菜单，在 merge_sub_menus 中建议将冗余子菜单合并到主子菜单（系统会自动迁移全部卡片，不会丢失）；',
+  '4. 仅在发现完全空置且无存在必要（card_count === 0 且无子菜单）的栏目时，在 delete_empty_menus / delete_empty_sub_menus 中给出清理建议；',
+  '5. 如无必要不要大拆大建，保持整体结构稳定清晰。'
+].join('\n');
+
+function buildMenuOrganizeMessages(menuOverview, customPrompt) {
+  const isCustom = Boolean(customPrompt && customPrompt.trim());
+  const requirement = isCustom
+    ? `请完全严格按照以下用户自定义要求整理和重构导航栏目结构：\n${customPrompt.trim()}`
+    : DEFAULT_MENU_ORGANIZE_PROMPT;
+
+  const systemPrompt = [
+    '你是一个专业的网站导航站信息架构与栏目规划助手。',
+    '你必须只返回严格合法的 JSON 对象，不要包含任何额外解释文字。',
+    '输出 JSON 结构必须为：',
+    '{',
+    '  "rename_menus": [{"id": 2, "new_name": "AI Stuff", "reason": "规范大小写"}],',
+    '  "rename_sub_menus": [{"id": 1, "new_name": "AI Chat", "reason": "规范大小写"}],',
+    '  "reorder_menus": [1, 2, 5, 4, 3, 6],',
+    '  "reorder_sub_menus": [{"parent_id": 2, "sub_menu_ids": [1, 2], "reason": "高频优先"}],',
+    '  "merge_sub_menus": [{"source_id": 3, "target_id": 1, "reason": "功能重叠，合并后卡片自动迁移"}],',
+    '  "add_menus": [{"name": "新主菜单", "reason": "理由"}],',
+    '  "add_sub_menus": [{"parent_id": 2, "name": "新子菜单", "reason": "理由"}],',
+    '  "delete_empty_menus": [{"id": 9, "reason": "空主菜单无卡片无子菜单"}],',
+    '  "delete_empty_sub_menus": [{"id": 12, "reason": "空子菜单无卡片"}]',
+    '}',
+    '硬性约束：',
+    '1. 所有涉及的 id / parent_id / source_id / target_id 必须严格来自输入的 menus 数据，绝不可编造不存在的 ID。',
+    '2. delete_empty_menus 仅可包含 direct_card_count === 0 且 sub_menus 为空的空主菜单；delete_empty_sub_menus 仅可包含 card_count === 0 的空子菜单。',
+    '3. merge_sub_menus 的 source_id 与 target_id 不能相同，且不能形成循环合并。',
+    '4. 某项无需变更时请返回空数组 []（reorder_menus 无需变更时返回 []）。'
+  ].join('\n');
+
+  const userPayload = {
+    mode: isCustom ? 'custom' : 'default',
+    requirement,
+    menus: menuOverview
+  };
+
+  return [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: JSON.stringify(userPayload) }
+  ];
+}
+
+function computeMenuOrganizePlan(rawOutput, menus, subMenus, cardStats) {
+  const menuById = new Map(menus.map(m => [Number(m.id), m]));
+  const subMenuById = new Map(subMenus.map(sm => [Number(sm.id), sm]));
+  const subMenusByParent = new Map();
+  for (const sm of subMenus) {
+    const pid = Number(sm.parent_id);
+    if (!subMenusByParent.has(pid)) subMenusByParent.set(pid, []);
+    subMenusByParent.get(pid).push(sm);
+  }
+
+  const directCountByMenu = cardStats.directCountByMenu || new Map();
+  const countBySubMenu = cardStats.countBySubMenu || new Map();
+
+  // 1. 重命名（主菜单 + 子菜单）
+  const renames = [];
+  const seenRenameKeys = new Set();
+  for (const item of (Array.isArray(rawOutput?.rename_menus) ? rawOutput.rename_menus : [])) {
+    const id = Number(item?.id);
+    const newName = String(item?.new_name || '').trim();
+    const existing = menuById.get(id);
+    if (!existing || !newName || newName === existing.name) continue;
+    const key = `menu:${id}`;
+    if (seenRenameKeys.has(key)) continue;
+    seenRenameKeys.add(key);
+    renames.push({
+      key,
+      kind: 'menu',
+      id,
+      old_name: existing.name,
+      new_name: newName,
+      parent_name: '',
+      reason: String(item?.reason || '').trim()
+    });
+  }
+  for (const item of (Array.isArray(rawOutput?.rename_sub_menus) ? rawOutput.rename_sub_menus : [])) {
+    const id = Number(item?.id);
+    const newName = String(item?.new_name || '').trim();
+    const existing = subMenuById.get(id);
+    if (!existing || !newName || newName === existing.name) continue;
+    const key = `sub_menu:${id}`;
+    if (seenRenameKeys.has(key)) continue;
+    seenRenameKeys.add(key);
+    renames.push({
+      key,
+      kind: 'sub_menu',
+      id,
+      old_name: existing.name,
+      new_name: newName,
+      parent_name: menuById.get(Number(existing.parent_id))?.name || '',
+      reason: String(item?.reason || '').trim()
+    });
+  }
+
+  // 2. 合并子菜单（防自环/链式冲突）
+  const merges = [];
+  const mergedSources = new Set();
+  const mergedTargets = new Set();
+  for (const item of (Array.isArray(rawOutput?.merge_sub_menus) ? rawOutput.merge_sub_menus : [])) {
+    const sourceId = Number(item?.source_id);
+    const targetId = Number(item?.target_id);
+    if (!sourceId || !targetId || sourceId === targetId) continue;
+    const source = subMenuById.get(sourceId);
+    const target = subMenuById.get(targetId);
+    if (!source || !target) continue;
+    if (mergedSources.has(sourceId) || mergedTargets.has(sourceId) || mergedSources.has(targetId)) continue;
+    mergedSources.add(sourceId);
+    mergedTargets.add(targetId);
+    merges.push({
+      key: `merge:${sourceId}->${targetId}`,
+      source_id: sourceId,
+      source_name: source.name,
+      source_parent_id: Number(source.parent_id),
+      source_parent_name: menuById.get(Number(source.parent_id))?.name || '',
+      target_id: targetId,
+      target_name: target.name,
+      target_parent_id: Number(target.parent_id),
+      target_parent_name: menuById.get(Number(target.parent_id))?.name || '',
+      card_count: Number(countBySubMenu.get(sourceId) || 0),
+      reason: String(item?.reason || '').trim() || '合并重叠子菜单并自动迁移卡片'
+    });
+  }
+
+  // 3. 排序调整（主菜单 + 子菜单）
+  const reorders = [];
+  const rawMenuOrder = Array.isArray(rawOutput?.reorder_menus) ? rawOutput.reorder_menus.map(Number) : [];
+  if (rawMenuOrder.length >= 2) {
+    const validMenuOrder = [...new Set(rawMenuOrder)].filter(id => menuById.has(id));
+    for (const m of menus) {
+      if (!validMenuOrder.includes(Number(m.id))) validMenuOrder.push(Number(m.id));
+    }
+    const oldMenuIds = menus.map(m => Number(m.id));
+    if (validMenuOrder.join(',') !== oldMenuIds.join(',')) {
+      reorders.push({
+        key: 'reorder:menus',
+        kind: 'menu',
+        parent_id: null,
+        parent_name: '全部主菜单',
+        ordered_ids: validMenuOrder,
+        old_order_names: oldMenuIds.map(id => menuById.get(id)?.name || `#${id}`),
+        new_order_names: validMenuOrder.map(id => menuById.get(id)?.name || `#${id}`),
+        reason: '优化主菜单展示顺序'
+      });
+    }
+  }
+
+  const seenSubReorderParents = new Set();
+  for (const item of (Array.isArray(rawOutput?.reorder_sub_menus) ? rawOutput.reorder_sub_menus : [])) {
+    const parentId = Number(item?.parent_id);
+    if (!menuById.has(parentId) || seenSubReorderParents.has(parentId)) continue;
+    const siblings = subMenusByParent.get(parentId) || [];
+    if (siblings.length < 2) continue;
+    const siblingIds = siblings.map(sm => Number(sm.id));
+    const siblingIdSet = new Set(siblingIds);
+    const rawIds = Array.isArray(item?.sub_menu_ids) ? item.sub_menu_ids.map(Number) : [];
+    const validIds = [...new Set(rawIds)].filter(id => siblingIdSet.has(id));
+    for (const id of siblingIds) {
+      if (!validIds.includes(id)) validIds.push(id);
+    }
+    if (validIds.join(',') !== siblingIds.join(',')) {
+      seenSubReorderParents.add(parentId);
+      reorders.push({
+        key: `reorder:sub:${parentId}`,
+        kind: 'sub_menu',
+        parent_id: parentId,
+        parent_name: menuById.get(parentId).name,
+        ordered_ids: validIds,
+        old_order_names: siblingIds.map(id => subMenuById.get(id)?.name || `#${id}`),
+        new_order_names: validIds.map(id => subMenuById.get(id)?.name || `#${id}`),
+        reason: String(item?.reason || '').trim() || '优化子菜单展示顺序'
+      });
+    }
+  }
+
+  // 4. 新增栏目（主菜单 + 子菜单）
+  const additions = [];
+  const existingMenuNames = new Set(menus.map(m => String(m.name || '').trim().toLowerCase()));
+  const seenAddKeys = new Set();
+  for (const item of (Array.isArray(rawOutput?.add_menus) ? rawOutput.add_menus : [])) {
+    const name = String(item?.name || '').trim();
+    const lower = name.toLowerCase();
+    if (!name || existingMenuNames.has(lower)) continue;
+    const key = `add:menu:${lower}`;
+    if (seenAddKeys.has(key)) continue;
+    seenAddKeys.add(key);
+    additions.push({
+      key,
+      kind: 'menu',
+      parent_id: null,
+      parent_name: '',
+      name,
+      reason: String(item?.reason || '').trim()
+    });
+  }
+  for (const item of (Array.isArray(rawOutput?.add_sub_menus) ? rawOutput.add_sub_menus : [])) {
+    const parentId = Number(item?.parent_id);
+    const name = String(item?.name || '').trim();
+    const lower = name.toLowerCase();
+    if (!menuById.has(parentId) || !name) continue;
+    const existingSibNames = new Set((subMenusByParent.get(parentId) || []).map(sm => String(sm.name || '').trim().toLowerCase()));
+    if (existingSibNames.has(lower)) continue;
+    const key = `add:sub:${parentId}:${lower}`;
+    if (seenAddKeys.has(key)) continue;
+    seenAddKeys.add(key);
+    additions.push({
+      key,
+      kind: 'sub_menu',
+      parent_id: parentId,
+      parent_name: menuById.get(parentId).name,
+      name,
+      reason: String(item?.reason || '').trim()
+    });
+  }
+
+  // 5. 删除空栏目（严格校验卡片数为 0 且主菜单无子菜单，且不与合并源重复）
+  const deletions = [];
+  const seenDeleteKeys = new Set();
+  for (const item of (Array.isArray(rawOutput?.delete_empty_menus) ? rawOutput.delete_empty_menus : [])) {
+    const id = Number(item?.id);
+    const existing = menuById.get(id);
+    if (!existing) continue;
+    const directCount = Number(directCountByMenu.get(id) || 0);
+    const subCount = (subMenusByParent.get(id) || []).length;
+    if (directCount > 0 || subCount > 0) continue;
+    const key = `del:menu:${id}`;
+    if (seenDeleteKeys.has(key)) continue;
+    seenDeleteKeys.add(key);
+    deletions.push({
+      key,
+      kind: 'menu',
+      id,
+      name: existing.name,
+      parent_name: '',
+      card_count: 0,
+      sub_menu_count: 0,
+      reason: String(item?.reason || '').trim() || '空主菜单（无卡片且无子菜单）'
+    });
+  }
+  for (const item of (Array.isArray(rawOutput?.delete_empty_sub_menus) ? rawOutput.delete_empty_sub_menus : [])) {
+    const id = Number(item?.id);
+    const existing = subMenuById.get(id);
+    if (!existing || mergedSources.has(id)) continue;
+    const cardCount = Number(countBySubMenu.get(id) || 0);
+    if (cardCount > 0) continue;
+    const key = `del:sub:${id}`;
+    if (seenDeleteKeys.has(key)) continue;
+    seenDeleteKeys.add(key);
+    deletions.push({
+      key,
+      kind: 'sub_menu',
+      id,
+      name: existing.name,
+      parent_name: menuById.get(Number(existing.parent_id))?.name || '',
+      card_count: 0,
+      sub_menu_count: 0,
+      reason: String(item?.reason || '').trim() || '空子菜单（无卡片）'
+    });
+  }
+
+  return { renames, reorders, merges, additions, deletions };
 }
 
 function mergeBatchSuggestions(plans, menus, subMenus) {
@@ -1276,9 +1588,10 @@ function mergeBatchSuggestions(plans, menus, subMenus) {
   return [...merged.values()].filter(s => s.card_ids.length >= 3);
 }
 
-function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {}) {
+function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null, backupImpl = null } = {}) {
   const router = express.Router();
   const tasks = new Map();
+  const performAutoBackup = backupImpl || (() => backupRoutes.createAiAutoWebdavBackup());
 
   ensureAiTable().catch(err => console.error('初始化 ai_configs 表失败:', err));
 
@@ -1331,12 +1644,18 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
     const customPrompt = String(body.prompt || '').trim();
     const scope = String(body.scope || 'smart');
     const enableProbe = body.enable_probe !== false;
+    const protectMainDirect = body.protect_main_direct !== undefined
+      ? Boolean(body.protect_main_direct)
+      : scope !== 'custom';
 
     if (!baseUrl || !apiKey) {
       throw new Error('请先在步骤 1 添加并激活一个有效的 AI 接口配置');
     }
     if (!model) {
       throw new Error('当前激活的 AI 接口尚未配置模型，请点击编辑按钮拉取或输入模型并保存');
+    }
+    if (scope === 'custom' && !customPrompt) {
+      throw new Error('选择「自定义 AI 整理」模式时，请务必填写整理指令');
     }
 
     return {
@@ -1347,6 +1666,7 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
       customPrompt,
       scope,
       enableProbe,
+      protectMainDirect,
       menu_id: body.menu_id,
       sub_menu_id: body.sub_menu_id,
       card_ids: body.card_ids
@@ -1500,7 +1820,10 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
     async function runSingleBatchWithRetry(batch, batchIdx) {
       const batchNo = batchIdx + 1;
       const totalBatches = batches.length;
-      const messages = buildOrganizeMessages(menusTree, batch, params.customPrompt, probeMap, duplicateHints);
+      const messages = buildOrganizeMessages(menusTree, batch, params.customPrompt, probeMap, duplicateHints, {
+        scope: params.scope,
+        protectMainDirect: params.protectMainDirect
+      });
       let lastErr = null;
 
       for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1523,7 +1846,9 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
             }
             throw parseErr;
           }
-          return computeOrganizePlan(batch, parsed, menus, subMenus, probeMap);
+          return computeOrganizePlan(batch, parsed, menus, subMenus, probeMap, {
+            protectMainDirect: params.protectMainDirect
+          });
         } catch (err) {
           if (err?.isCancelled || signal?.aborted) throw createAbortError();
           lastErr = err;
@@ -1877,15 +2202,379 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
     }
   });
 
-  // 应用用户勾选确认的 AI 整理更改
+  async function executeMenuOrganizePipeline(params, { signal = null, onProgress = null } = {}) {
+    const updateProgress = (patch) => {
+      if (typeof onProgress === 'function') onProgress(patch);
+    };
+
+    if (signal?.aborted) throw createAbortError();
+    updateProgress({ stage: 'preparing', progress: 10, message: '正在统计所有主菜单、子菜单及下属卡片样本...' });
+
+    const menus = await all('SELECT * FROM menus ORDER BY "order" ASC, id ASC');
+    const subMenus = await all('SELECT * FROM sub_menus ORDER BY "order" ASC, id ASC');
+    const activeCards = await all(`
+      SELECT id, menu_id, sub_menu_id, title
+      FROM cards
+      WHERE COALESCE(is_deleted, 0) = 0
+      ORDER BY "order" ASC, id ASC
+    `);
+
+    const directCardsByMenu = new Map();
+    const cardsBySubMenu = new Map();
+    for (const card of activeCards) {
+      if (card.sub_menu_id) {
+        const sid = Number(card.sub_menu_id);
+        if (!cardsBySubMenu.has(sid)) cardsBySubMenu.set(sid, []);
+        cardsBySubMenu.get(sid).push(card.title);
+      } else if (card.menu_id) {
+        const mid = Number(card.menu_id);
+        if (!directCardsByMenu.has(mid)) directCardsByMenu.set(mid, []);
+        directCardsByMenu.get(mid).push(card.title);
+      }
+    }
+
+    const directCountByMenu = new Map();
+    const countBySubMenu = new Map();
+    const menuOverview = menus.map(m => {
+      const mid = Number(m.id);
+      const directList = directCardsByMenu.get(mid) || [];
+      directCountByMenu.set(mid, directList.length);
+      const children = subMenus
+        .filter(sm => Number(sm.parent_id) === mid)
+        .map(sm => {
+          const sid = Number(sm.id);
+          const subList = cardsBySubMenu.get(sid) || [];
+          countBySubMenu.set(sid, subList.length);
+          return {
+            id: sid,
+            name: sm.name,
+            order: sm.order,
+            card_count: subList.length,
+            sample_cards: subList.slice(0, 6)
+          };
+        });
+      return {
+        id: mid,
+        name: m.name,
+        order: m.order,
+        direct_card_count: directList.length,
+        direct_sample_cards: directList.slice(0, 6),
+        sub_menus: children
+      };
+    });
+
+    if (!menus.length) {
+      return {
+        renames: [],
+        reorders: [],
+        merges: [],
+        additions: [],
+        deletions: [],
+        model: params.model,
+        total_menus: 0,
+        total_sub_menus: 0
+      };
+    }
+
+    updateProgress({ stage: 'organizing', progress: 35, batch_done: 0, batch_total: 1, message: '正在调用 AI 分析栏目结构与卡片分布（流式保活）...' });
+    const candidateUrls = buildChatCandidateUrls(params.baseUrl);
+    const messages = buildMenuOrganizeMessages(menuOverview, params.customPrompt);
+
+    let lastErr = null;
+    let completion = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (signal?.aborted) throw createAbortError();
+      try {
+        completion = await callChatCompletionsWithFallback(fetchImpl, candidateUrls, {
+          apiKey: params.apiKey,
+          model: params.model,
+          messages,
+          timeoutMs: AI_REQUEST_TIMEOUT_MS,
+          signal
+        });
+        break;
+      } catch (err) {
+        if (err?.isCancelled || signal?.aborted) throw createAbortError();
+        lastErr = err;
+        const status = Number(err?.status || 0);
+        if ([401, 402, 403].includes(status) || /invalid_api_key|insufficient_quota|model_not_found/i.test(err?.message || '')) {
+          break;
+        }
+        if (attempt < 2) {
+          updateProgress({ stage: 'organizing', message: '调用中转站整理栏目出现波动，正在自动重试（第 2 次尝试）...' });
+        }
+      }
+    }
+
+    if (!completion) {
+      throw new Error(`调用中转站整理栏目失败：${lastErr?.message || '未知错误'}`);
+    }
+
+    const { content, finishReason } = extractChatContent(completion);
+    let parsed;
+    try {
+      parsed = parseAiJson(content);
+    } catch (parseErr) {
+      if (finishReason === 'length') {
+        throw new Error('AI 栏目整理输出因长度限制被截断 (finish_reason=length)');
+      }
+      throw parseErr;
+    }
+
+    const plan = computeMenuOrganizePlan(parsed, menus, subMenus, { directCountByMenu, countBySubMenu });
+    return {
+      ...plan,
+      model: params.model,
+      total_menus: menus.length,
+      total_sub_menus: subMenus.length,
+      used_default_prompt: !params.customPrompt
+    };
+  }
+
+  // 启动栏目管理 AI 整理异步任务（复用同一任务队列与流式机制）
+  router.post('/menus/organize/start', auth, async (req, res) => {
+    try {
+      pruneExpiredTasks();
+      const body = { ...(req.body || {}), scope: 'menu' };
+      const params = await resolveOrganizeParams(body);
+      const taskId = typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+      const task = {
+        id: taskId,
+        status: 'running',
+        stage: 'preparing',
+        progress: 5,
+        message: '栏目整理任务已启动，正在读取栏目数据...',
+        probed_done: 0,
+        probed_total: 0,
+        batch_done: 0,
+        batch_total: 1,
+        result: null,
+        error: null,
+        abortController: new AbortController(),
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      tasks.set(taskId, task);
+
+      setImmediate(async () => {
+        try {
+          const result = await executeMenuOrganizePipeline(params, {
+            signal: task.abortController.signal,
+            onProgress(patch) {
+              if (task.status !== 'running') return;
+              Object.assign(task, patch, { updatedAt: Date.now() });
+            }
+          });
+          if (task.status === 'cancelled' || task.abortController.signal.aborted) {
+            task.status = 'cancelled';
+            task.stage = 'cancelled';
+            task.message = '任务已取消';
+            task.updatedAt = Date.now();
+            return;
+          }
+          task.status = 'completed';
+          task.stage = 'completed';
+          task.progress = 100;
+          task.batch_done = 1;
+          task.message = '栏目分析完成，请预览确认变更';
+          task.result = result;
+          task.updatedAt = Date.now();
+        } catch (err) {
+          if (err?.isCancelled || task.status === 'cancelled' || task.abortController.signal.aborted) {
+            task.status = 'cancelled';
+            task.stage = 'cancelled';
+            task.message = '任务已取消';
+            task.updatedAt = Date.now();
+            return;
+          }
+          task.status = 'failed';
+          task.stage = 'failed';
+          task.error = err?.message || '未知错误';
+          task.message = `AI 整理栏目失败：${task.error}`;
+          task.updatedAt = Date.now();
+        }
+      });
+
+      res.json({
+        taskId,
+        status: task.status,
+        stage: task.stage,
+        progress: task.progress,
+        message: task.message
+      });
+    } catch (err) {
+      res.status(400).json({ message: err.message || '启动栏目整理任务失败' });
+    }
+  });
+
+  // 应用用户勾选确认的栏目 AI 整理更改（事务执行 + 合并子菜单无损迁移卡片 + 变更前可选 WebDAV 自动备份）
+  router.post('/menus/apply', auth, async (req, res) => {
+    const renames = Array.isArray(req.body?.renames) ? req.body.renames : [];
+    const reorders = Array.isArray(req.body?.reorders) ? req.body.reorders : [];
+    const merges = Array.isArray(req.body?.merges) ? req.body.merges : [];
+    const additions = Array.isArray(req.body?.additions) ? req.body.additions : [];
+    const deletions = Array.isArray(req.body?.deletions) ? req.body.deletions : [];
+    const autoBackup = Boolean(req.body?.auto_backup);
+
+    if (!renames.length && !reorders.length && !merges.length && !additions.length && !deletions.length) {
+      return res.status(400).json({ message: '请至少勾选一条要应用的栏目更改' });
+    }
+
+    let backupInfo = null;
+    if (autoBackup) {
+      try {
+        backupInfo = await performAutoBackup();
+      } catch (backupErr) {
+        return res.status(502).json({
+          message: `变更前自动备份到 WebDAV 失败，已中止数据库修改：${backupErr.message}`,
+          backup_failed: true,
+          detail: backupErr.message
+        });
+      }
+    }
+
+    try {
+      await run('BEGIN TRANSACTION');
+      const summary = { renamed: 0, merged: 0, migrated_cards: 0, added: 0, deleted: 0, reordered: 0 };
+
+      // 1. 重命名
+      for (const item of renames) {
+        const id = Number(item?.id);
+        const newName = String(item?.new_name || '').trim();
+        if (!Number.isInteger(id) || id <= 0 || !newName) continue;
+        if (item.kind === 'menu') {
+          const r = await run('UPDATE menus SET name = ? WHERE id = ?', [newName, id]);
+          summary.renamed += r.changes;
+        } else if (item.kind === 'sub_menu') {
+          const r = await run('UPDATE sub_menus SET name = ? WHERE id = ?', [newName, id]);
+          summary.renamed += r.changes;
+        }
+      }
+
+      // 2. 合并子菜单（无损迁移源子菜单下全部卡片含回收站卡片，再删除源子菜单）
+      for (const item of merges) {
+        const sourceId = Number(item?.source_id);
+        const targetId = Number(item?.target_id);
+        if (!Number.isInteger(sourceId) || !Number.isInteger(targetId) || sourceId === targetId) continue;
+        const source = await get('SELECT id FROM sub_menus WHERE id = ?', [sourceId]);
+        const target = await get('SELECT id, parent_id FROM sub_menus WHERE id = ?', [targetId]);
+        if (!source || !target) continue;
+
+        const maxOrderRow = await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM cards WHERE sub_menu_id = ?', [targetId]);
+        let nextOrder = Number(maxOrderRow?.maxOrder || 0);
+        const sourceCards = await all('SELECT id FROM cards WHERE sub_menu_id = ? ORDER BY "order" ASC, id ASC', [sourceId]);
+        for (const c of sourceCards) {
+          nextOrder += 1;
+          const r = await run(
+            'UPDATE cards SET menu_id = ?, sub_menu_id = ?, "order" = ? WHERE id = ?',
+            [Number(target.parent_id), targetId, nextOrder, c.id]
+          );
+          summary.migrated_cards += r.changes;
+        }
+        await run('DELETE FROM sub_menus WHERE id = ?', [sourceId]);
+        summary.merged += 1;
+      }
+
+      // 3. 新增主菜单 / 子菜单
+      for (const item of additions) {
+        const name = String(item?.name || '').trim();
+        if (!name) continue;
+        if (item.kind === 'menu') {
+          const maxRow = await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM menus');
+          await run('INSERT INTO menus (name, "order") VALUES (?, ?)', [name, Number(maxRow?.maxOrder || 0) + 1]);
+          summary.added += 1;
+        } else if (item.kind === 'sub_menu') {
+          const parentId = Number(item?.parent_id);
+          const parent = await get('SELECT id FROM menus WHERE id = ?', [parentId]);
+          if (!parent) continue;
+          const maxRow = await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM sub_menus WHERE parent_id = ?', [parentId]);
+          await run('INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)', [parentId, name, Number(maxRow?.maxOrder || 0) + 1]);
+          summary.added += 1;
+        }
+      }
+
+      // 4. 删除空栏目（事务内二次校验确保零活跃卡片，避免误删非空栏目或产生孤儿卡片）
+      for (const item of deletions) {
+        const id = Number(item?.id);
+        if (!Number.isInteger(id) || id <= 0) continue;
+        if (item.kind === 'sub_menu') {
+          const activeCnt = await get('SELECT COUNT(*) AS cnt FROM cards WHERE COALESCE(is_deleted, 0) = 0 AND sub_menu_id = ?', [id]);
+          if (Number(activeCnt?.cnt || 0) > 0) continue;
+          // 若回收站有软删除卡片引用此子菜单，保留其父主菜单并解除 sub_menu_id 引用
+          const sub = await get('SELECT parent_id FROM sub_menus WHERE id = ?', [id]);
+          if (sub) {
+            await run('UPDATE cards SET menu_id = COALESCE(menu_id, ?), sub_menu_id = NULL WHERE sub_menu_id = ? AND COALESCE(is_deleted, 0) = 1', [sub.parent_id, id]);
+          }
+          const r = await run('DELETE FROM sub_menus WHERE id = ?', [id]);
+          summary.deleted += r.changes;
+        } else if (item.kind === 'menu') {
+          const subCnt = await get('SELECT COUNT(*) AS cnt FROM sub_menus WHERE parent_id = ?', [id]);
+          const activeCnt = await get('SELECT COUNT(*) AS cnt FROM cards WHERE COALESCE(is_deleted, 0) = 0 AND menu_id = ?', [id]);
+          if (Number(subCnt?.cnt || 0) > 0 || Number(activeCnt?.cnt || 0) > 0) continue;
+          const fallbackMenu = await get('SELECT id FROM menus WHERE id != ? ORDER BY "order" ASC, id ASC LIMIT 1', [id]);
+          if (fallbackMenu) {
+            await run('UPDATE cards SET menu_id = ?, sub_menu_id = NULL WHERE menu_id = ? AND COALESCE(is_deleted, 0) = 1', [fallbackMenu.id, id]);
+          }
+          const r = await run('DELETE FROM menus WHERE id = ?', [id]);
+          summary.deleted += r.changes;
+        }
+      }
+
+      // 5. 排序调整
+      for (const item of reorders) {
+        const ids = Array.isArray(item?.ordered_ids) ? item.ordered_ids.map(Number).filter(n => Number.isInteger(n) && n > 0) : [];
+        if (!ids.length) continue;
+        if (item.kind === 'menu') {
+          for (let i = 0; i < ids.length; i++) {
+            await run('UPDATE menus SET "order" = ? WHERE id = ?', [i + 1, ids[i]]);
+          }
+          summary.reordered += 1;
+        } else if (item.kind === 'sub_menu') {
+          for (let i = 0; i < ids.length; i++) {
+            await run('UPDATE sub_menus SET "order" = ? WHERE id = ?', [i + 1, ids[i]]);
+          }
+          summary.reordered += 1;
+        }
+      }
+
+      await run('COMMIT');
+      res.json({
+        summary,
+        backup: backupInfo,
+        message: `栏目整理已应用（重命名 ${summary.renamed}、合并 ${summary.merged} 迁移 ${summary.migrated_cards} 张卡片、排序 ${summary.reordered}、新增 ${summary.added}、清理空栏目 ${summary.deleted}）`
+      });
+    } catch (err) {
+      await run('ROLLBACK').catch(() => {});
+      res.status(500).json({ message: `应用栏目更改失败：${err.message}` });
+    }
+  });
+
+  // 应用用户勾选确认的 AI 整理更改（支持变更前自动 WebDAV 备份）
   router.post('/apply', auth, async (req, res) => {
     const updates = Array.isArray(req.body?.updates)
       ? req.body.updates
       : (Array.isArray(req.body?.changes) ? req.body.changes : []);
     const recycles = Array.isArray(req.body?.recycles) ? req.body.recycles : [];
+    const autoBackup = Boolean(req.body?.auto_backup);
 
     if (!updates.length && !recycles.length) {
       return res.status(400).json({ message: '请至少勾选一条要应用的更改' });
+    }
+
+    let backupInfo = null;
+    if (autoBackup) {
+      try {
+        backupInfo = await performAutoBackup();
+      } catch (backupErr) {
+        return res.status(502).json({
+          message: `变更前自动备份到 WebDAV 失败，已中止数据库写入：${backupErr.message}`,
+          backup_failed: true,
+          detail: backupErr.message
+        });
+      }
     }
 
     try {
@@ -1949,7 +2638,8 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null } = {})
       res.json({
         updated,
         recycled,
-        message: `已更新 ${updated} 张卡片，移入回收站 ${recycled} 张卡片`
+        backup: backupInfo,
+        message: `已更新 ${updated} 张卡片，移入回收站 ${recycled} 张卡片${backupInfo ? `（变更前已自动备份：${backupInfo.filename}）` : ''}`
       });
     } catch (err) {
       await run('ROLLBACK').catch(() => {});
@@ -1974,7 +2664,10 @@ defaultRouter.parseAiJson = parseAiJson;
 defaultRouter.parseSseStreamText = parseSseStreamText;
 defaultRouter.extractChatContent = extractChatContent;
 defaultRouter.callChatCompletionsWithFallback = callChatCompletionsWithFallback;
+defaultRouter.buildOrganizeMessages = buildOrganizeMessages;
+defaultRouter.buildMenuOrganizeMessages = buildMenuOrganizeMessages;
 defaultRouter.computeOrganizePlan = computeOrganizePlan;
+defaultRouter.computeMenuOrganizePlan = computeMenuOrganizePlan;
 defaultRouter.computeOrganizeDiff = computeOrganizeDiff;
 defaultRouter.DEFAULT_ORGANIZE_PROMPT = DEFAULT_ORGANIZE_PROMPT;
 

@@ -31,7 +31,7 @@
           <div class="two-fields"><input v-model="webdav.username" type="text" placeholder="用户名（可选）" autocomplete="username" /><input v-model="webdav.password" type="password" placeholder="密码（可选）" autocomplete="current-password" /></div>
           <div class="webdav-buttons"><button class="secondary-button" type="button" :disabled="webdavListLoading" @click="loadWebdavBackups">{{ webdavListLoading ? '读取中…' : '读取云端备份列表' }}</button><button class="primary-button" type="button" :disabled="webdavLoading" @click="backupWebdav">{{ webdavLoading ? '上传中…' : '备份到 WebDAV' }}</button></div>
           <div v-if="webdavFiles.length" class="cloud-list">
-            <label>选择云端备份（默认最新）<select v-model="selectedWebdavUrl"><option v-for="(file, index) in webdavFiles" :key="file.url" :value="file.url">{{ file.name }}{{ index === 0 ? '（最新）' : '' }}{{ file.modified ? ` · ${formatDate(file.modified)}` : '' }}</option></select></label>
+            <label>选择云端备份（默认最新）<select v-model="selectedWebdavUrl"><option v-for="(file, index) in webdavFiles" :key="file.url" :value="file.url">{{ formatBackupTag(file) }} {{ file.name }}{{ index === 0 ? '（最新）' : '' }}{{ file.modified ? ` · ${formatDate(file.modified)}` : '' }}</option></select></label>
             <button class="restore-button" type="button" :disabled="webdavRestoreLoading" @click="restoreFromWebdav">{{ webdavRestoreLoading ? '还原中…' : '还原选中的云端备份' }}</button>
           </div>
           <p v-else class="hint">输入 WebDAV 地址和账户后点击“读取云端备份列表”。地址以 / 结尾时，上传会自动生成带时间的备份文件名。</p>
@@ -151,6 +151,13 @@ async function restoreFromWebdav() {
     notify('云端备份还原成功，请刷新页面');
   } catch (error) { notify(error.response?.data?.message || '云端备份还原失败', 'error'); }
   finally { webdavRestoreLoading.value = false; }
+}
+
+function formatBackupTag(file) {
+  if (file?.label) return file.label;
+  if (/^nav-item-ai-backup-/i.test(file?.name || '')) return '[AI变更前]';
+  if (/^nav-item-backup-/i.test(file?.name || '')) return '[手动]';
+  return '[云端]';
 }
 
 function formatDate(value) {

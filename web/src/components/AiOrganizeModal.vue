@@ -13,7 +13,17 @@
 
         <div class="ai-modal-body">
           <div v-if="notice.text" :class="['ai-notice', notice.type]">
-            {{ notice.text }}
+            <div>{{ notice.text }}</div>
+            <div v-if="backupFailedPrompt" class="force-apply-row">
+              <button
+                type="button"
+                class="ai-btn ai-btn-xs ai-btn-danger-outline"
+                :disabled="applying"
+                @click="handleForceApplyWithoutBackup"
+              >
+                忽略备份并强制应用更改
+              </button>
+            </div>
           </div>
 
           <!-- 异步任务进度条面板 -->
@@ -158,12 +168,18 @@
               <div class="ai-section-head">
                 <div class="ai-section-title">
                   <span class="step-num">2</span>
-                  <span>整理范围与整理要求（选填）</span>
+                  <span>整理范围与整理要求{{ organizeScope === 'custom' ? '（必填）' : '（选填）' }}</span>
                 </div>
-                <label class="probe-toggle">
-                  <input v-model="enableProbe" type="checkbox" :disabled="organizing" />
-                  <span>启用后端真实测活（含 403/CF 盾识别）</span>
-                </label>
+                <div class="option-toggles">
+                  <label class="probe-toggle" title="开启后，AI 不会把主菜单直属（尤其是 Home）的高频卡片擅自降级移入子菜单">
+                    <input v-model="protectMainDirect" type="checkbox" :disabled="organizing" />
+                    <span>保护主菜单直属卡片不被移走</span>
+                  </label>
+                  <label class="probe-toggle">
+                    <input v-model="enableProbe" type="checkbox" :disabled="organizing" />
+                    <span>启用后端真实测活（含 403/CF 盾识别）</span>
+                  </label>
+                </div>
               </div>
 
               <div class="scope-cards">
@@ -188,14 +204,26 @@
                     <div class="scope-card-desc">{{ hasCurrentFilter ? '仅测活并整理当前表格选定的栏目' : '请在卡片列表选定具体主菜单后可用' }}</div>
                   </div>
                 </label>
+                <label :class="['scope-card custom-card', { active: organizeScope === 'custom' }]">
+                  <input v-model="organizeScope" type="radio" value="custom" :disabled="organizing" />
+                  <div>
+                    <div class="scope-card-title">🎯 自定义 AI 整理（完全按指令执行）</div>
+                    <div class="scope-card-desc">解除默认防乱保守限制，完全严格按下方指令移动分类、精简直属或批量改名</div>
+                  </div>
+                </label>
               </div>
 
+              <div v-if="organizeScope === 'custom'" class="custom-prompt-label">
+                自定义整理指令 <span class="required-star">*</span>（可按需取消勾选「启用后端真实测活」以极速重排）
+              </div>
               <textarea
                 v-model="customPrompt"
-                class="ai-textarea"
+                :class="['ai-textarea', { 'custom-required': organizeScope === 'custom' }]"
                 rows="3"
                 :disabled="organizing"
-                placeholder="自定义整理要求（选填）。留空将执行默认「防乱 + 防硬塞平衡版」规则：严禁自建/改名栏目、匹配度不足归入「待归类」或标记需人工复核、≥3 张同类新站点仅给出新增子菜单建议、补全 15 字内中文描述并规范大小写、结合后端测活标记死链/停用/重复卡片。"
+                :placeholder="organizeScope === 'custom'
+                  ? '必填。示例：“把 Home 直属只保留 8 个最常用站，其余移入对应子菜单” 或 “把所有中转站标题统一为 品牌名 - API，并补充一句话简介”'
+                  : '自定义整理要求（选填）。留空将执行默认「防乱 + 防硬塞平衡版」规则：保护主菜单直属卡片、严禁自建/改名栏目、匹配度不足归入「待归类」或标记需人工复核、≥3 张同类新站点仅给出新增子菜单建议、补全 15 字内中文描述并规范大小写、结合后端测活标记死链/停用/重复卡片。'"
               ></textarea>
             </section>
           </div>
@@ -426,6 +454,15 @@
             </div>
           </template>
           <template v-else>
+            <label :class="['webdav-backup-toggle', { disabled: !webdavConfigured }]">
+              <input
+                v-model="autoBackupWebdav"
+                type="checkbox"
+                :disabled="!webdavConfigured || applying"
+              />
+              <span v-if="webdavConfigured">变更前自动备份到 WebDAV 云端</span>
+              <span v-else>未配置 WebDAV，可在「用户管理」中设置</span>
+            </label>
             <div class="footer-buttons">
               <button type="button" class="ai-btn ai-btn-ghost" @click="step = 'config'">重新整理</button>
               <button
@@ -433,7 +470,7 @@
                 type="button"
                 class="ai-btn ai-btn-primary"
                 :disabled="applying || (selectedUpdateIds.length === 0 && selectedRecycleIds.length === 0)"
-                @click="handleApply"
+                @click="handleApply(false)"
               >
                 {{ applying ? '正在应用更改...' : `应用更改（更新 ${selectedUpdateIds.length} · 移入回收站 ${selectedRecycleIds.length}）` }}
               </button>
@@ -459,7 +496,8 @@ import {
   getAiOrganizeStatus,
   cancelAiOrganize,
   applyAiOrganize,
-  addSubMenu
+  addSubMenu,
+  getWebdavConfig
 } from '../api';
 
 const POLL_INTERVAL_MS = 2000;
@@ -485,9 +523,13 @@ const fetchingModels = ref(false);
 
 const organizeScope = ref('smart');
 const enableProbe = ref(true);
+const protectMainDirect = ref(true);
 const customPrompt = ref('');
 const organizing = ref(false);
 const applying = ref(false);
+const webdavConfigured = ref(false);
+const autoBackupWebdav = ref(false);
+const backupFailedPrompt = ref(false);
 
 // 异步任务与轮询状态
 const currentTaskId = ref('');
@@ -535,6 +577,7 @@ function setNotice(text, type = 'info') {
 
 function clearNotice() {
   notice.value = { text: '', type: 'info' };
+  backupFailedPrompt.value = false;
 }
 
 function stopPolling() {
@@ -579,6 +622,14 @@ function formatRequestError(err, fallback) {
   return fallback;
 }
 
+watch(organizeScope, (nextScope) => {
+  if (nextScope === 'custom') {
+    protectMainDirect.value = false;
+  } else {
+    protectMainDirect.value = true;
+  }
+});
+
 watch(() => props.visible, async (val) => {
   if (val) {
     clearNotice();
@@ -591,11 +642,23 @@ watch(() => props.visible, async (val) => {
     if (!hasCurrentFilter.value && organizeScope.value === 'current') {
       organizeScope.value = 'smart';
     }
-    await loadConfigs();
+    await Promise.all([loadConfigs(), loadWebdavStatus()]);
   } else {
     stopPolling();
   }
 });
+
+async function loadWebdavStatus() {
+  try {
+    const { data } = await getWebdavConfig();
+    const configured = Boolean(String(data?.data?.url || '').trim());
+    webdavConfigured.value = configured;
+    autoBackupWebdav.value = configured;
+  } catch {
+    webdavConfigured.value = false;
+    autoBackupWebdav.value = false;
+  }
+}
 
 onBeforeUnmount(() => {
   stopPolling();
@@ -806,6 +869,10 @@ async function handleOrganize() {
     openEditConfigForm(activeConfig.value);
     return;
   }
+  if (organizeScope.value === 'custom' && !customPrompt.value.trim()) {
+    setNotice('已选择「自定义 AI 整理」模式，请在下方输入框中填写具体的整理指令后再开始执行', 'error');
+    return;
+  }
 
   organizing.value = true;
   clearNotice();
@@ -824,7 +891,8 @@ async function handleOrganize() {
       model: activeModel,
       prompt: customPrompt.value.trim(),
       scope: organizeScope.value,
-      enable_probe: enableProbe.value
+      enable_probe: enableProbe.value,
+      protect_main_direct: protectMainDirect.value
     };
     if (organizeScope.value === 'current' && hasCurrentFilter.value) {
       payload.menu_id = props.currentMenuId;
@@ -941,7 +1009,7 @@ function formatRecycleReason(reason) {
   }
 }
 
-async function handleApply() {
+async function handleApply(forceIgnoreBackup = false) {
   const chosenUpdates = diffUpdates.value.filter(item => selectedUpdateIds.value.includes(item.id));
   const chosenRecycles = diffRecycles.value.filter(item => selectedRecycleIds.value.includes(item.id));
   if (!chosenUpdates.length && !chosenRecycles.length) {
@@ -953,7 +1021,8 @@ async function handleApply() {
   try {
     const { data } = await applyAiOrganize({
       updates: chosenUpdates,
-      recycles: chosenRecycles
+      recycles: chosenRecycles,
+      auto_backup: forceIgnoreBackup ? false : Boolean(webdavConfigured.value && autoBackupWebdav.value)
     });
     if (data.recycled > 0) {
       window.dispatchEvent(new Event('recycle:updated'));
@@ -961,14 +1030,23 @@ async function handleApply() {
     emit('applied', {
       updated: data.updated || 0,
       recycled: data.recycled || 0,
+      backup: data.backup || null,
       menusChanged: createdAnySubMenu.value
     });
     emit('close');
   } catch (err) {
+    if (err?.response?.data?.backup_failed) {
+      backupFailedPrompt.value = true;
+    }
     setNotice(formatRequestError(err, '应用更改失败'), 'error');
   } finally {
     applying.value = false;
   }
+}
+
+function handleForceApplyWithoutBackup() {
+  if (!window.confirm('确定忽略 WebDAV 云端备份并直接将整理更改写入数据库吗？')) return;
+  return handleApply(true);
 }
 
 async function handleClose() {
@@ -1307,7 +1385,54 @@ async function handleClose() {
 }
 .form-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
+.option-toggles {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
 .probe-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.81rem;
+  color: #334155;
+  cursor: pointer;
+}
+
+.scope-cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.scope-card.custom-card.active {
+  border-color: #ec4899;
+  background: #fdf2f8;
+}
+
+.custom-prompt-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #9d174d;
+  margin-bottom: 6px;
+}
+
+.required-star {
+  color: #dc2626;
+}
+
+.ai-textarea.custom-required {
+  border-color: #f472b6;
+}
+
+.force-apply-row {
+  margin-top: 8px;
+}
+
+.webdav-backup-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1316,11 +1441,9 @@ async function handleClose() {
   cursor: pointer;
 }
 
-.scope-cards {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  margin-bottom: 10px;
+.webdav-backup-toggle.disabled {
+  color: #94a3b8;
+  cursor: not-allowed;
 }
 
 .scope-card {

@@ -494,7 +494,8 @@ test('拖拽排序、分类回收站完整流转、后端测活与 AI 智能整�
     const organizeRes = await (await api('/api/ai/organize', 'POST', {
       config_id: createdCfg.data.id,
       model: 'gpt-4o-mini',
-      scope: 'smart'
+      scope: 'smart',
+      protect_main_direct: false
     })).json();
     assert.equal(organizeRes.probe_stats.total, 4);
     assert.equal(organizeRes.probe_stats.waf_403, 2);
@@ -572,6 +573,250 @@ test('拖拽排序、分类回收站完整流转、后端测活与 AI 智能整�
     if (server) await new Promise(resolve => server.close(resolve));
     delete require.cache[dbPath];
     for (const key of moduleKeys) delete require.cache[require.resolve(key)];
+    await close(db);
+  }
+});
+
+test('主菜单直属保护逻辑与自定义 AI 模式指令透传', () => {
+  const menus = [
+    { id: 1, name: 'Home', sub_menus: [] },
+    { id: 2, name: 'AI Stuff', sub_menus: [{ sub_menu_id: 10, name: 'AI Chat' }] }
+  ];
+  const subMenus = [{ id: 10, parent_id: 2, name: 'AI Chat' }];
+  const cards = [
+    { id: 1, menu_id: 1, sub_menu_id: null, title: 'chatgpt', url: 'https://chatgpt.com', desc: '' }
+  ];
+
+  // 开启主菜单直属保护时：即使 AI 试图移入子菜单 10，后端硬性保留在 Home 直属，仅允许标题与描述更新
+  const protectedPlan = aiModule.computeOrganizePlan(
+    cards,
+    { updates: [{ id: 1, menu_id: 2, sub_menu_id: 10, title: 'ChatGPT', desc: 'AI 对话助手' }] },
+    menus,
+    subMenus,
+    new Map(),
+    { protectMainDirect: true }
+  );
+  assert.equal(protectedPlan.updates.length, 1);
+  assert.equal(protectedPlan.updates[0].new_menu_id, 1);
+  assert.equal(protectedPlan.updates[0].new_sub_menu_id, null);
+  assert.deepEqual(protectedPlan.updates[0].changed_fields, ['title', 'desc']);
+
+  // 关闭主菜单直属保护时：允许按 AI 建议移入子菜单 10
+  const unprotectedPlan = aiModule.computeOrganizePlan(
+    cards,
+    { updates: [{ id: 1, menu_id: 2, sub_menu_id: 10, title: 'ChatGPT', desc: 'AI 对话助手' }] },
+    menus,
+    subMenus,
+    new Map(),
+    { protectMainDirect: false }
+  );
+  assert.equal(unprotectedPlan.updates[0].new_menu_id, 2);
+  assert.equal(unprotectedPlan.updates[0].new_sub_menu_id, 10);
+  assert.deepEqual(unprotectedPlan.updates[0].changed_fields, ['category', 'title', 'desc']);
+
+  // 自定义 AI 整理模式提示词透传：包含主菜单直属语义与解除默认保守规则声明
+  const customMsgs = aiModule.buildOrganizeMessages(
+    menus,
+    cards,
+    '把 Home 直属只保留 8 个最常用站，其余移入对应子菜单',
+    new Map(),
+    new Map(),
+    { scope: 'custom', protectMainDirect: false }
+  );
+  assert.match(customMsgs[0].content, /自定义 AI 整理模式/);
+  assert.match(customMsgs[0].content, /主菜单直属/);
+  assert.match(customMsgs[1].content, /把 Home 直属只保留 8 个最常用站/);
+});
+
+test('WebDAV AI 变更前自动备份命名区分与云端列表兼容识别', async () => {
+  const backupRoutes = require('../routes/backup');
+  const fixedDate = new Date('2026-11-25T08:30:44.235Z');
+
+  // 1. 独立命名区分：手动 vs AI 变更前自动备份
+  const manualTarget = backupRoutes.buildWebdavBackupTarget('https://dav.example.com/nav/', {
+    prefix: 'nav-item-backup',
+    now: fixedDate
+  });
+  const aiTarget = backupRoutes.buildWebdavBackupTarget('https://dav.example.com/nav/', {
+    prefix: 'nav-item-ai-backup',
+    now: fixedDate
+  });
+  assert.equal(manualTarget.pathname, '/nav/nav-item-backup-2026-11-25T08-30-44-235Z.json');
+  assert.equal(aiTarget.pathname, '/nav/nav-item-ai-backup-2026-11-25T08-30-44-235Z.json');
+
+  // 即使配置的 WebDAV 路径指向具体手动 .json 文件，AI 备份也放到同目录独立文件名，不覆盖手动备份
+  const aiFromFileUrl = backupRoutes.buildWebdavBackupTarget('https://dav.example.com/nav/my-manual.json', {
+    prefix: 'nav-item-ai-backup',
+    now: fixedDate
+  });
+  assert.equal(aiFromFileUrl.pathname, '/nav/nav-item-ai-backup-2026-11-25T08-30-44-235Z.json');
+
+  // 2. listWebdav 同时识别手动与 AI 自动备份并正确标注类别
+  const mockPropfindXml = `<?xml version="1.0" encoding="utf-8"?>
+    <d:multistatus xmlns:d="DAV:">
+      <d:response>
+        <d:href>/nav/nav-item-ai-backup-2026-11-25T08-30-44-235Z.json</d:href>
+        <d:propstat><d:prop>
+          <d:getlastmodified>Wed, 25 Nov 2026 08:30:44 GMT</d:getlastmodified>
+          <d:getcontentlength>2048</d:getcontentlength>
+        </d:prop></d:propstat>
+      </d:response>
+      <d:response>
+        <d:href>/nav/nav-item-backup-2026-11-25T08-00-00-000Z.json</d:href>
+        <d:propstat><d:prop>
+          <d:getlastmodified>Wed, 25 Nov 2026 08:00:00 GMT</d:getlastmodified>
+          <d:getcontentlength>1024</d:getcontentlength>
+        </d:prop></d:propstat>
+      </d:response>
+    </d:multistatus>`;
+
+  const listed = await backupRoutes.listWebdav('https://dav.example.com/nav/', 'u', 'p', async () => ({
+    statusCode: 207,
+    headers: {},
+    body: Buffer.from(mockPropfindXml)
+  }));
+  assert.equal(listed.length, 2);
+  assert.equal(listed[0].backupType, 'ai');
+  assert.equal(listed[0].label, '[AI变更前]');
+  assert.equal(listed[1].backupType, 'manual');
+  assert.equal(listed[1].label, '[手动]');
+});
+
+test('栏目 AI 整理、子菜单合并无损迁移卡片及 WebDAV 备份失败中止保护', async () => {
+  const db = await initMemoryDb();
+  let server;
+  const authCookie = `${COOKIE_NAME}=${jwt.sign({ id: 1, username: 'admin' }, JWT_SECRET, { expiresIn: 3600 })}`;
+
+  try {
+    await run(db, 'DELETE FROM cards');
+    await run(db, 'DELETE FROM sub_menus');
+    await run(db, 'DELETE FROM menus');
+
+    const mHome = (await run(db, 'INSERT INTO menus (name, "order") VALUES (?, ?)', ['Home', 1])).lastID;
+    const mAi = (await run(db, 'INSERT INTO menus (name, "order") VALUES (?, ?)', ['ai stuff', 2])).lastID;
+    const mEmpty = (await run(db, 'INSERT INTO menus (name, "order") VALUES (?, ?)', ['空栏目', 3])).lastID;
+
+    const smChat = (await run(db, 'INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)', [mAi, 'Al chat', 1])).lastID;
+    const smDupChat = (await run(db, 'INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)', [mAi, 'AI 对话重复', 2])).lastID;
+    const smEmpty = (await run(db, 'INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)', [mAi, '空子菜单', 3])).lastID;
+
+    const cInChat = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, "order", is_deleted) VALUES (?, ?, ?, ?, 1, 0)', [mAi, smChat, 'ChatGPT', 'https://chatgpt.com'])).lastID;
+    const cInDup1 = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, "order", is_deleted) VALUES (?, ?, ?, ?, 1, 0)', [mAi, smDupChat, 'Claude', 'https://claude.ai'])).lastID;
+    const cInDup2 = (await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, "order", is_deleted) VALUES (?, ?, ?, ?, 2, 0)', [mAi, smDupChat, 'Gemini', 'https://gemini.google.com'])).lastID;
+
+    require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: db };
+    delete require.cache[require.resolve('../routes/ai')];
+    const { createAiRouter } = require('../routes/ai');
+
+    let shouldFailBackup = true;
+    let backupCalls = 0;
+    const mockBackup = async () => {
+      backupCalls++;
+      if (shouldFailBackup) throw new Error('WebDAV 返回 HTTP 503');
+      return {
+        filename: 'nav-item-ai-backup-2026-11-25T08-30-44-235Z.json',
+        url: 'https://dav.example.com/nav/nav-item-ai-backup-2026-11-25T08-30-44-235Z.json'
+      };
+    };
+
+    const mockFetch = async () => ({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              rename_menus: [{ id: mAi, new_name: 'AI Stuff', reason: '规范大小写' }],
+              rename_sub_menus: [{ id: smChat, new_name: 'AI Chat', reason: '修正拼写 Al -> AI' }],
+              reorder_menus: [mHome, mAi, mEmpty],
+              reorder_sub_menus: [],
+              merge_sub_menus: [{ source_id: smDupChat, target_id: smChat, reason: '重复的对话子菜单合并' }],
+              add_menus: [],
+              add_sub_menus: [{ parent_id: mAi, name: 'AI 绘图', reason: '补充常用子分类' }],
+              delete_empty_menus: [{ id: mEmpty, reason: '无卡片无子菜单' }, { id: mAi, reason: '非空主菜单应被后端拦截' }],
+              delete_empty_sub_menus: [{ id: smEmpty, reason: '无卡片空子菜单' }]
+            })
+          }
+        }]
+      })
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/ai', createAiRouter({ fetchImpl: mockFetch, backupImpl: mockBackup }));
+
+    server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const api = (endpoint, method = 'GET', body = null) => fetch(`${base}${endpoint}`, {
+      method,
+      headers: { Cookie: authCookie, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {})
+    });
+
+    const cfg = await (await api('/api/ai/configs', 'POST', {
+      name: 'Menu Test API',
+      base_url: 'https://relay.test/v1',
+      api_key: 'sk-test',
+      model: 'gpt-5.6-luna'
+    })).json();
+
+    // 1. 自定义卡片整理未填指令应直接返回 400
+    const badCustom = await api('/api/ai/organize/start', 'POST', { config_id: cfg.data.id, scope: 'custom', prompt: '' });
+    assert.equal(badCustom.status, 400);
+
+    // 2. 启动栏目 AI 整理异步任务并轮询至完成
+    const startRes = await (await api('/api/ai/menus/organize/start', 'POST', { config_id: cfg.data.id })).json();
+    assert.ok(startRes.taskId);
+
+    let statusData;
+    for (let i = 0; i < 40; i++) {
+      statusData = await (await api(`/api/ai/organize/status/${startRes.taskId}`)).json();
+      if (statusData.status !== 'running') break;
+      await new Promise(r => setTimeout(r, 20));
+    }
+    assert.equal(statusData.status, 'completed');
+    const menuPlan = statusData.result;
+    assert.equal(menuPlan.renames.length, 2);
+    assert.equal(menuPlan.merges.length, 1);
+    assert.equal(menuPlan.merges[0].card_count, 2);
+    assert.equal(menuPlan.additions.length, 1);
+    // 非空的 mAi 必须被后端安全拦截，deletions 只保留 mEmpty 与 smEmpty
+    assert.equal(menuPlan.deletions.length, 2);
+
+    // 3. 勾选自动备份但 WebDAV 失败 -> 必须返回 502 backup_failed 且数据库零修改
+    const failedApply = await api('/api/ai/menus/apply', 'POST', { ...menuPlan, auto_backup: true });
+    assert.equal(failedApply.status, 502);
+    const failedBody = await failedApply.json();
+    assert.equal(failedBody.backup_failed, true);
+    const subMenusUnchanged = await all(db, 'SELECT * FROM sub_menus');
+    assert.equal(subMenusUnchanged.length, 3);
+
+    // 4. WebDAV 恢复正常 -> 先备份成功，再事务应用合并/重命名/新增/清理，验证零孤儿卡片
+    shouldFailBackup = false;
+    const okApply = await api('/api/ai/menus/apply', 'POST', { ...menuPlan, auto_backup: true });
+    assert.equal(okApply.status, 200);
+    const okBody = await okApply.json();
+    assert.equal(backupCalls, 2);
+    assert.equal(okBody.backup.filename, 'nav-item-ai-backup-2026-11-25T08-30-44-235Z.json');
+    assert.equal(okBody.summary.merged, 1);
+    assert.equal(okBody.summary.migrated_cards, 2);
+
+    const menusAfter = await all(db, 'SELECT * FROM menus ORDER BY id ASC');
+    assert.deepEqual(menusAfter.map(m => m.name), ['Home', 'AI Stuff']);
+
+    const subMenusAfter = await all(db, 'SELECT * FROM sub_menus ORDER BY id ASC');
+    assert.deepEqual(subMenusAfter.map(sm => sm.name), ['AI Chat', 'AI 绘图']);
+
+    const cardsAfter = await all(db, 'SELECT id, menu_id, sub_menu_id FROM cards ORDER BY id ASC');
+    assert.equal(cardsAfter.length, 3);
+    // 原 smDupChat 的两张卡片全部无损迁移到 smChat，无孤儿卡片
+    assert.deepEqual(cardsAfter.map(c => c.id), [cInChat, cInDup1, cInDup2]);
+    assert.ok(cardsAfter.every(c => c.menu_id === mAi && c.sub_menu_id === smChat));
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    delete require.cache[dbPath];
+    delete require.cache[require.resolve('../routes/ai')];
     await close(db);
   }
 });

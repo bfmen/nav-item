@@ -21,6 +21,10 @@ const all = (sql, params = []) => new Promise((resolve, reject) => {
   db.all(sql, params, (error, rows) => error ? reject(error) : resolve(rows));
 });
 
+const get = (sql, params = []) => new Promise((resolve, reject) => {
+  db.get(sql, params, (error, row) => error ? reject(error) : resolve(row));
+});
+
 const run = (sql, params = []) => new Promise((resolve, reject) => {
   db.run(sql, params, function onRun(error) {
     if (error) reject(error);
@@ -106,7 +110,7 @@ function requestWebdav(target, method, username, password, body = '', extraHeade
         ...(username ? { Authorization: `Basic ${Buffer.from(`${username}:${password || ''}`).toString('base64')}` } : {})
         , ...extraHeaders
       },
-      timeout: 10000
+      timeout: 15000
     }, response => {
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk));
@@ -120,18 +124,58 @@ function requestWebdav(target, method, username, password, body = '', extraHeade
   });
 }
 
-function putWebdav(target, body, username, password) {
-  return requestWebdav(target, 'PUT', username, password, body, { 'Content-Type': 'application/json; charset=utf-8' });
+function putWebdav(target, body, username, password, requestImpl = requestWebdav) {
+  return requestImpl(target, 'PUT', username, password, body, { 'Content-Type': 'application/json; charset=utf-8' });
 }
 
 function decodeXml(value) {
   return value.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 }
 
-async function listWebdav(target, username, password) {
-  const base = new URL(target);
-  if (!base.pathname.endsWith('/')) base.pathname += '/';
-  const response = await requestWebdav(base, 'PROPFIND', username, password, '', { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' });
+function classifyBackupFilename(name) {
+  const filename = String(name || '');
+  if (/^nav-item-ai-backup-.*\.json$/i.test(filename)) {
+    return { backupType: 'ai', label: '[AI变更前]' };
+  }
+  if (/^nav-item-backup-.*\.json$/i.test(filename)) {
+    return { backupType: 'manual', label: '[手动]' };
+  }
+  return { backupType: 'other', label: '[云端]' };
+}
+
+function buildWebdavBackupTarget(baseUrl, { prefix = 'nav-item-backup', now = new Date() } = {}) {
+  const target = new URL(baseUrl);
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  const isJsonPath = /\.json$/i.test(target.pathname);
+
+  if (prefix === 'nav-item-ai-backup') {
+    const dirPath = isJsonPath
+      ? target.pathname.replace(/\/[^/]*$/, '')
+      : target.pathname.replace(/\/+$/, '');
+    target.pathname = `${dirPath}/${prefix}-${stamp}.json`;
+    return target;
+  }
+
+  // 手动备份：若明确填写 .json 文件直接覆盖，否则在目录下生成带时间文件名
+  if (!isJsonPath) {
+    target.pathname = `${target.pathname.replace(/\/+$/, '')}/${prefix}-${stamp}.json`;
+  }
+  return target;
+}
+
+function getWebdavDirectoryUrl(baseUrl) {
+  const base = new URL(baseUrl);
+  if (/\.json$/i.test(base.pathname)) {
+    base.pathname = base.pathname.replace(/\/[^/]*$/, '/');
+  } else if (!base.pathname.endsWith('/')) {
+    base.pathname += '/';
+  }
+  return base;
+}
+
+async function listWebdav(target, username, password, requestImpl = requestWebdav) {
+  const base = getWebdavDirectoryUrl(target);
+  const response = await requestImpl(base, 'PROPFIND', username, password, '', { Depth: '1', 'Content-Type': 'application/xml; charset=utf-8' });
   const xml = response.body.toString('utf8');
   const items = [...xml.matchAll(/<[^:>]*:?response[^>]*>([\s\S]*?)<\/[^:>]*:?response>/gi)].map(match => {
     const block = match[1];
@@ -142,26 +186,64 @@ async function listWebdav(target, username, password) {
     const fileUrl = new URL(decodeXml(href), base).toString();
     const pathname = new URL(fileUrl).pathname;
     if (pathname.endsWith('/') || !/\.json$/i.test(pathname)) return null;
-    return { name: decodeURIComponent(pathname.split('/').pop()), url: fileUrl, modified: modified ? decodeXml(modified).trim() : '', size: Number(size) || 0 };
+    const name = decodeURIComponent(pathname.split('/').pop());
+    const meta = classifyBackupFilename(name);
+    return {
+      name,
+      url: fileUrl,
+      modified: modified ? decodeXml(modified).trim() : '',
+      size: Number(size) || 0,
+      backupType: meta.backupType,
+      label: meta.label
+    };
   }).filter(Boolean);
   const unique = [...new Map(items.map(item => [item.url, item])).values()];
   unique.sort((a, b) => (Date.parse(b.modified) || 0) - (Date.parse(a.modified) || 0) || b.name.localeCompare(a.name));
   return unique;
 }
 
-async function pruneWebdavBackups(target, username, password) {
-  const files = await listWebdav(target, username, password);
-  const stale = files.slice(MAX_WEBDAV_BACKUPS);
+async function pruneWebdavBackups(target, username, password, { backupType = null, requestImpl = requestWebdav } = {}) {
+  const files = await listWebdav(target, username, password, requestImpl);
+  const scoped = backupType ? files.filter(file => file.backupType === backupType) : files;
+  const stale = scoped.slice(MAX_WEBDAV_BACKUPS);
   let removed = 0;
   for (const file of stale) {
     try {
-      await requestWebdav(file.url, 'DELETE', username, password);
+      await requestImpl(file.url, 'DELETE', username, password);
       removed++;
     } catch {
       // 上传已经成功时，单个旧文件删除失败不应让用户误以为备份失败。
     }
   }
-  return { kept: Math.min(files.length, MAX_WEBDAV_BACKUPS), removed };
+  return { kept: Math.min(scoped.length, MAX_WEBDAV_BACKUPS), removed };
+}
+
+async function getSavedWebdavConfig() {
+  const row = await get('SELECT url, username, password FROM webdav_config WHERE id = 1');
+  const url = String(row?.url || '').trim();
+  return {
+    configured: Boolean(url),
+    url,
+    username: String(row?.username || ''),
+    password: String(row?.password || '')
+  };
+}
+
+async function createAiAutoWebdavBackup({ requestImpl = requestWebdav, now = new Date() } = {}) {
+  const cfg = await getSavedWebdavConfig();
+  if (!cfg.configured) {
+    throw new Error('尚未配置 WebDAV，请先在「用户管理」中设置 WebDAV 地址');
+  }
+  const target = buildWebdavBackupTarget(cfg.url, { prefix: 'nav-item-ai-backup', now });
+  const backup = await createBackup();
+  await putWebdav(target, JSON.stringify(backup, null, 2), cfg.username, cfg.password, requestImpl);
+  try {
+    await pruneWebdavBackups(cfg.url, cfg.username, cfg.password, { backupType: 'ai', requestImpl });
+  } catch {
+    // 清理旧备份失败不影响本次已成功上传的快照
+  }
+  const filename = decodeURIComponent(target.pathname.split('/').pop());
+  return { filename, url: target.toString() };
 }
 
 router.get('/export', authMiddleware, async (req, res) => {
@@ -175,7 +257,8 @@ router.get('/export', authMiddleware, async (req, res) => {
 router.get('/webdav/config', authMiddleware, (req, res) => {
   db.get('SELECT url, username, password FROM webdav_config WHERE id = 1', (error, row) => {
     if (error) return res.status(500).json({ message: '读取 WebDAV 配置失败' });
-    res.json({ data: row || { url: '', username: '', password: '' } });
+    const data = row || { url: '', username: '', password: '' };
+    res.json({ data: { ...data, configured: Boolean(String(data.url || '').trim()) } });
   });
 });
 
@@ -203,16 +286,11 @@ router.post('/webdav', authMiddleware, async (req, res) => {
   try {
     const { url, username, password } = req.body || {};
     if (!url) return res.status(400).json({ message: '请输入 WebDAV 地址' });
-    const target = new URL(url);
-    // WebDAV 输入框表示目录：只有明确填写 .json 文件时才直接覆盖文件。
-    // 目录是否带末尾斜杠都统一在目录下创建新的备份文件，避免改写目录节点。
-    if (!/\.json$/i.test(target.pathname)) {
-      target.pathname = `${target.pathname.replace(/\/+$/, '')}/nav-item-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-    }
+    const target = buildWebdavBackupTarget(url, { prefix: 'nav-item-backup' });
     const backup = await createBackup();
     await putWebdav(target, JSON.stringify(backup, null, 2), username, password);
-    const cleanup = await pruneWebdavBackups(url, username, password);
-    res.json({ message: `WebDAV 备份成功，已保留最新 ${cleanup.kept} 个备份`, url: target.toString() });
+    const cleanup = await pruneWebdavBackups(url, username, password, { backupType: 'manual' });
+    res.json({ message: `WebDAV 备份成功，已保留最新 ${cleanup.kept} 个手动备份`, url: target.toString() });
   } catch (error) {
     res.status(400).json({ message: `WebDAV 备份失败：${error.message}` });
   }
@@ -240,5 +318,11 @@ router.post('/webdav/restore', authMiddleware, async (req, res) => {
     res.status(400).json({ message: `云端备份还原失败：${error.message}` });
   }
 });
+
+router.classifyBackupFilename = classifyBackupFilename;
+router.buildWebdavBackupTarget = buildWebdavBackupTarget;
+router.listWebdav = listWebdav;
+router.getSavedWebdavConfig = getSavedWebdavConfig;
+router.createAiAutoWebdavBackup = createAiAutoWebdavBackup;
 
 module.exports = router;
