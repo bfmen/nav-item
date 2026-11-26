@@ -6,35 +6,44 @@
       :data-card-id="card.id"
       class="link-item"
       :style="getCardStyle(index)"
+      @mouseenter="showTooltip($event, card)"
+      @mouseleave="hideTooltip"
     >
-      <a :href="card.url" target="_blank" rel="noopener noreferrer">
+      <a :href="card.url" target="_blank" rel="noopener noreferrer" @focus="showTooltip($event, card)" @blur="hideTooltip">
         <div class="icon-badge">
           <CardLogo class="link-icon" :card="card" />
         </div>
         <span class="link-text">{{ card.title }}</span>
       </a>
-
-      <!-- 优雅悬停 Tooltip：完整标题 + AI 中文描述 + 域名 -->
-      <div class="card-tooltip" role="tooltip">
-        <div class="tooltip-title">{{ card.title }}</div>
-        <div v-if="card.desc" class="tooltip-desc">{{ card.desc }}</div>
-        <div class="tooltip-meta">
-          <span v-if="showCategory && (card.menu_name || card.sub_menu_name)" class="tooltip-cat">
-            {{ card.menu_name }}<template v-if="card.sub_menu_name"> / {{ card.sub_menu_name }}</template>
-          </span>
-          <span class="tooltip-host">{{ formatHost(card.url) }}</span>
-        </div>
-      </div>
     </div>
 
     <div v-if="!cards || cards.length === 0" class="empty-grid-hint">
       暂无匹配的导航卡片
     </div>
+
+    <!-- Teleport 到 body 动态定位的悬停 Tooltip，绝不被搜索框或父容器层叠上下文遮挡 -->
+    <Teleport to="body">
+      <div
+        v-if="activeTooltip"
+        :class="['floating-card-tooltip', `placement-${activeTooltip.placement}`]"
+        :style="activeTooltip.style"
+        role="tooltip"
+      >
+        <div class="tooltip-title">{{ activeTooltip.card.title }}</div>
+        <div v-if="activeTooltip.card.desc" class="tooltip-desc">{{ activeTooltip.card.desc }}</div>
+        <div class="tooltip-meta">
+          <span v-if="showCategory && (activeTooltip.card.menu_name || activeTooltip.card.sub_menu_name)" class="tooltip-cat">
+            {{ activeTooltip.card.menu_name }}<template v-if="activeTooltip.card.sub_menu_name"> / {{ activeTooltip.card.sub_menu_name }}</template>
+          </span>
+          <span class="tooltip-host">{{ formatHost(activeTooltip.card.url) }}</span>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, nextTick } from 'vue';
+import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import CardLogo from './CardLogo.vue';
 
 const props = defineProps({
@@ -49,11 +58,13 @@ const props = defineProps({
 });
 
 const animating = ref(false);
+const activeTooltip = ref(null);
 let animTimer = null;
 
 watch(
   () => (props.cards || []).map(c => c.id).join(','),
   (nextIds, prevIds) => {
+    activeTooltip.value = null;
     if (!nextIds || nextIds === prevIds) return;
     nextTick(() => {
       animating.value = false;
@@ -67,6 +78,42 @@ watch(
     });
   }
 );
+
+function showTooltip(event, card) {
+  if (typeof window === 'undefined' || window.innerWidth <= 768) return;
+  const el = event.currentTarget?.closest?.('.link-item') || event.currentTarget;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const halfMaxWidth = 140;
+  const centerX = Math.min(Math.max(halfMaxWidth, rect.left + rect.width / 2), window.innerWidth - halfMaxWidth);
+  // 靠近顶部导航栏时自动向下弹出，其余情况向上弹出；通过 Teleport + z-index: 80 彻底避免被搜索框遮挡
+  const preferBottom = rect.top < 155;
+  const top = preferBottom ? rect.bottom + 10 : rect.top - 10;
+
+  activeTooltip.value = {
+    card,
+    placement: preferBottom ? 'bottom' : 'top',
+    style: {
+      left: `${centerX}px`,
+      top: `${top}px`
+    }
+  };
+}
+
+function hideTooltip() {
+  activeTooltip.value = null;
+}
+
+onMounted(() => {
+  window.addEventListener('scroll', hideTooltip, { passive: true });
+  window.addEventListener('resize', hideTooltip, { passive: true });
+});
+
+onBeforeUnmount(() => {
+  window.clearTimeout(animTimer);
+  window.removeEventListener('scroll', hideTooltip);
+  window.removeEventListener('resize', hideTooltip);
+});
 
 function getCardStyle(index) {
   if (!animating.value) return {};
@@ -111,7 +158,8 @@ function formatHost(url) {
 
 .link-item {
   position: relative;
-  background: rgba(15, 23, 42, 0.34);
+  z-index: 1;
+  background: rgba(15, 23, 42, 0.36);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -129,9 +177,9 @@ function formatHost(url) {
 }
 
 .link-item:hover {
-  z-index: 30;
-  background: rgba(255, 255, 255, 0.24);
-  border-color: rgba(255, 255, 255, 0.35);
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.34);
   transform: translateY(-3px);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
 }
@@ -151,23 +199,27 @@ function formatHost(url) {
   box-sizing: border-box;
 }
 
-/* 图标浅色半透明圆角底衬：避免深色图标（如 GitHub）在深色背景中看不清 */
+/* 柔和中性半透明磨砂衬底：兼顾深色图标（如 GitHub）与浅色/白色图标（如 Hexa Watch）清晰度 */
 .icon-badge {
-  width: 34px;
-  height: 34px;
+  width: 36px;
+  height: 36px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+  background: rgba(226, 232, 240, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 2px 6px rgba(0, 0, 0, 0.18);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  transition: transform 0.18s ease, background-color 0.18s ease;
+  transition: transform 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
 }
 
 .link-item:hover .icon-badge {
   transform: scale(1.06);
-  background: rgba(255, 255, 255, 0.98);
+  background: rgba(226, 232, 240, 0.32);
+  border-color: rgba(255, 255, 255, 0.32);
 }
 
 .link-icon {
@@ -175,6 +227,7 @@ function formatHost(url) {
   height: 22px;
   object-fit: contain;
   display: block;
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.32));
 }
 
 /* 修复英文单词断行问题（不再使用 word-break: break-all） */
@@ -194,89 +247,6 @@ function formatHost(url) {
   white-space: normal;
   line-height: 1.3;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
-}
-
-/* 悬停 Tooltip */
-.card-tooltip {
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 10px);
-  transform: translateX(-50%) translateY(6px);
-  width: max-content;
-  min-width: 170px;
-  max-width: 260px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: rgba(15, 23, 42, 0.94);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
-  color: #f8fafc;
-  text-align: left;
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
-  z-index: 60;
-}
-
-.card-tooltip::after {
-  content: '';
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  border: 6px solid transparent;
-  border-top-color: rgba(15, 23, 42, 0.94);
-}
-
-.link-item:hover .card-tooltip {
-  opacity: 1;
-  visibility: visible;
-  transform: translateX(-50%) translateY(0);
-}
-
-.tooltip-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #ffffff;
-  line-height: 1.35;
-  word-break: keep-all;
-  overflow-wrap: break-word;
-}
-
-.tooltip-desc {
-  margin-top: 4px;
-  font-size: 12px;
-  color: #cbd5e1;
-  line-height: 1.45;
-  word-break: break-word;
-}
-
-.tooltip-meta {
-  margin-top: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: #94a3b8;
-}
-
-.tooltip-cat {
-  background: rgba(59, 130, 246, 0.24);
-  color: #93c5fd;
-  padding: 1px 6px;
-  border-radius: 999px;
-  font-weight: 500;
-}
-
-.tooltip-host {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 220px;
 }
 
 .empty-grid-hint {
@@ -307,10 +277,6 @@ function formatHost(url) {
 }
 
 @media (max-width: 768px) {
-  .card-tooltip {
-    display: none;
-  }
-
   .link-item {
     min-height: 86px;
     height: 86px;
@@ -324,6 +290,107 @@ function formatHost(url) {
 @media (prefers-reduced-motion: reduce) {
   .animate-fadeUp .link-item {
     animation: none;
+  }
+}
+</style>
+
+<style>
+/* 全局 Teleport 悬停 Tooltip：层级 z-index: 80（低于顶部导航 100，高于搜索区 20 与普通卡片 1） */
+.floating-card-tooltip {
+  position: fixed;
+  z-index: 80;
+  width: max-content;
+  min-width: 176px;
+  max-width: 268px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.44);
+  color: #f8fafc;
+  text-align: left;
+  pointer-events: none;
+  animation: tooltipFadeIn 0.14s ease-out both;
+}
+
+.floating-card-tooltip.placement-top {
+  transform: translate(-50%, -100%);
+}
+
+.floating-card-tooltip.placement-top::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: rgba(15, 23, 42, 0.95);
+}
+
+.floating-card-tooltip.placement-bottom {
+  transform: translate(-50%, 0);
+}
+
+.floating-card-tooltip.placement-bottom::after {
+  content: '';
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-bottom-color: rgba(15, 23, 42, 0.95);
+}
+
+.floating-card-tooltip .tooltip-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #ffffff;
+  line-height: 1.35;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.floating-card-tooltip .tooltip-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #cbd5e1;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.floating-card-tooltip .tooltip-meta {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.floating-card-tooltip .tooltip-cat {
+  background: rgba(59, 130, 246, 0.24);
+  color: #93c5fd;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+.floating-card-tooltip .tooltip-host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 230px;
+}
+
+@keyframes tooltipFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 </style>

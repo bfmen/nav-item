@@ -17,7 +17,7 @@
       />
     </div>
 
-    <div class="search-section">
+    <div :class="['search-section', { 'dropdown-open': showDropdown }]">
       <div class="search-box-wrapper" ref="searchWrapperRef">
         <div class="search-engine-select">
           <button
@@ -583,7 +583,8 @@ onBeforeUnmount(() => {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(226, 232, 240, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.16);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -594,6 +595,7 @@ onBeforeUnmount(() => {
   width: 18px;
   height: 18px;
   object-fit: contain;
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.3));
 }
 
 .dropdown-info {
@@ -681,7 +683,7 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   position: relative;
-  padding-top: 52px;
+  padding-top: 72px;
   box-sizing: border-box;
 }
 
@@ -698,9 +700,14 @@ onBeforeUnmount(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 2.3rem 0 1.8rem;
+  margin-top: 0.75rem;
+  padding: 2.5rem 0 2.1rem;
   position: relative;
-  z-index: 40;
+  z-index: 20;
+}
+
+.search-section.dropdown-open {
+  z-index: 90;
 }
 
 .search-box-wrapper {

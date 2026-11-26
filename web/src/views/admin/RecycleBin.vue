@@ -346,9 +346,10 @@ function formatTime(value) {
 
 <style scoped>
 .recycle-page {
-  max-width: 1280px;
-  width: 96%;
+  max-width: 1600px;
+  width: 100%;
   margin: 0 auto;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 12px;

@@ -325,8 +325,10 @@ function closeSider() {
 .admin-layout {
   display: flex;
   min-height: 100vh;
+  width: 100%;
   background: #f5f6fa;
   font-family: 'Segoe UI', Arial, sans-serif;
+  overflow-x: clip;
 }
 .admin-sider {
   width: 180px;
@@ -400,19 +402,23 @@ function closeSider() {
 .admin-main {
   flex: 1;
   background: #f5f6fa;
-  padding: 64px 0 0 180px;
+  margin-left: 180px;
+  padding-top: 64px;
+  width: calc(100% - 180px);
   min-width: 0;
-  overflow-x: auto;
+  box-sizing: border-box;
+  overflow-x: clip;
   display: flex;
   flex-direction: column;
   align-items: stretch;
 }
 .admin-header {
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
   align-items: center;
   height: 64px;
-  padding: 0 48px 0 0;
+  padding: 0 24px;
+  box-sizing: border-box;
   background: #f5f6fa;
   position: fixed;
   top: 0;
@@ -423,22 +429,27 @@ function closeSider() {
 }
 .header-title {
   flex: 1;
+  min-width: 0;
   text-align: center;
-  margin-left: 180px;
-  font-size: 1.5rem;
+  padding-left: 112px;
+  font-size: 1.4rem;
   font-weight: 500;
   letter-spacing: 2px;
   color: #222;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  flex-shrink: 0;
 }
 .home-icon {
   display: flex;
   align-items: center;
-  margin-right: 18px;
+  margin-right: 4px;
   cursor: pointer;
   border-radius: 50%;
   transition: background 0.2s;
@@ -452,10 +463,12 @@ function closeSider() {
   color: #e74c3c;
   border: 1px solid #f7caca;
   border-radius: 10px;
-  padding: 6px 10px;
-  font-size: 15px;
+  padding: 6px 12px;
+  font-size: 14px;
   font-weight: 500;
   margin: 0;
+  white-space: nowrap;
+  cursor: pointer;
   transition: background 0.2s, color 0.2s;
 }
 .btn.logout-btn:hover {
@@ -464,10 +477,13 @@ function closeSider() {
 }
 .admin-content {
   flex: 1;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  padding: 10px 0 0 0;
+  align-items: stretch;
+  padding: 16px 24px 0;
   margin-top: 0;
 }
 .admin-footer {
@@ -607,20 +623,25 @@ function closeSider() {
     transform: translateX(0);
   }
   .admin-main {
-    padding: 64px 0 0 0 !important;
+    margin-left: 0 !important;
+    width: 100% !important;
+    padding: 56px 0 0 0 !important;
+  }
+  .admin-content {
+    padding: 12px 12px 0;
   }
   .admin-header {
     left: 0 !important;
-    width: 100vw !important;
+    width: 100% !important;
     min-width: 0 !important;
-    padding: 0 8px 0 8px !important;
+    padding: 0 10px !important;
     box-sizing: border-box;
     flex-wrap: nowrap;
     height: 56px;
   }
   .header-title {
     font-size: 1.1rem !important;
-    margin-left: 0 !important;
+    padding-left: 0 !important;
     text-align: left !important;
     width: auto !important;
     flex: 1 1 auto;

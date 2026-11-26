@@ -1,6 +1,6 @@
 <template>
   <div class="nav-manage">
-    <!-- 左侧栏目树（约 265px，独立滚动） -->
+    <!-- 左侧栏目树（260px，独立滚动，顶部与右侧严格齐平） -->
     <aside class="tree-pane">
       <div class="tree-header">
         <div class="tree-add-row">
@@ -13,9 +13,6 @@
           />
           <button type="button" class="tree-add-btn" title="添加主菜单" @click="handleAddMenu">+</button>
         </div>
-        <button type="button" class="btn-ai-menu" @click="showAiMenuModal = true">
-          ✨ AI 整理栏目
-        </button>
       </div>
 
       <div class="tree-scroll">
@@ -195,7 +192,7 @@
           </div>
 
           <div class="header-actions">
-            <button type="button" class="btn btn-ai" @click="showAiCardModal = true">
+            <button type="button" class="btn btn-ai" @click="showAiModal = true">
               ✨ AI 智能整理
             </button>
           </div>
@@ -373,20 +370,13 @@
       </div>
     </Teleport>
 
-    <!-- AI 智能整理卡片弹窗 -->
+    <!-- 统一 AI 智能整理弹窗（内置「卡片整理与死链检测」与「栏目结构整理」双 Tab） -->
     <AiOrganizeModal
-      :visible="showAiCardModal"
+      :visible="showAiModal"
       :current-menu-id="selectedMenuId"
       :current-sub-menu-id="selectedSubMenuId"
-      @close="showAiCardModal = false"
-      @applied="onAiCardApplied"
-    />
-
-    <!-- AI 智能整理栏目弹窗 -->
-    <AiMenuOrganizeModal
-      :visible="showAiMenuModal"
-      @close="showAiMenuModal = false"
-      @applied="onAiMenuApplied"
+      @close="showAiModal = false"
+      @applied="onAiApplied"
     />
   </div>
 </template>
@@ -395,7 +385,6 @@
 import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import CardLogo from '../../components/CardLogo.vue';
 import AiOrganizeModal from '../../components/AiOrganizeModal.vue';
-import AiMenuOrganizeModal from '../../components/AiMenuOrganizeModal.vue';
 import {
   getMenus,
   addMenu as apiAddMenu,
@@ -444,8 +433,7 @@ const editingLogoValue = ref('');
 const logoPopoverStyle = ref({ top: '0px', left: '0px' });
 const logoInputRef = ref(null);
 
-const showAiCardModal = ref(false);
-const showAiMenuModal = ref(false);
+const showAiModal = ref(false);
 
 const toastMessage = ref('');
 const toastType = ref('success');
@@ -1110,9 +1098,13 @@ function onCardDragEnd() {
   cardDropTargetKey.value = '';
 }
 
-async function onAiCardApplied(result) {
+async function onAiApplied(result) {
   await Promise.all([loadMenus(), loadCards()]);
   window.dispatchEvent(new Event('recycle:updated'));
+  if (result?.mode === 'menus') {
+    showToast(result?.message || '✨ AI 栏目结构整理已应用');
+    return;
+  }
   const updated = typeof result === 'number' ? result : (result?.updated || 0);
   const recycled = typeof result === 'object' ? (result?.recycled || 0) : 0;
   const backupFile = typeof result === 'object' ? result?.backup?.filename : '';
@@ -1120,27 +1112,23 @@ async function onAiCardApplied(result) {
     showToast(`✨ AI 整理已应用：更新 ${updated} 张，移入回收站 ${recycled} 张${backupFile ? '（已云端备份）' : ''}`);
   }
 }
-
-async function onAiMenuApplied(data) {
-  await Promise.all([loadMenus(), loadCards()]);
-  showToast(data?.message || '✨ AI 栏目整理已应用');
-}
 </script>
 
 <style scoped>
 .nav-manage {
-  width: 97%;
-  max-width: 1480px;
-  margin: 0 auto;
   display: flex;
   align-items: flex-start;
-  gap: 14px;
-  min-height: calc(100vh - 125px);
+  gap: 16px;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 0;
+  box-sizing: border-box;
 }
 
-/* 左侧栏目树（宽约 265px，独立滚动） */
+/* 左侧栏目树（固定 260px，独立滚动，顶部与右侧严格齐平） */
 .tree-pane {
-  width: 266px;
+  width: 260px;
   flex-shrink: 0;
   background: #ffffff;
   border: 1px solid #e2e8f0;
@@ -1148,18 +1136,21 @@ async function onAiMenuApplied(data) {
   box-shadow: 0 4px 18px rgba(15, 23, 42, 0.05);
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 104px);
+  max-height: calc(100vh - 110px);
   position: sticky;
-  top: 74px;
+  top: 80px;
+  margin-top: 0;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .tree-header {
-  padding: 10px 10px 9px;
+  padding: 10px;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
   flex-direction: column;
   gap: 7px;
+  flex-shrink: 0;
 }
 
 .tree-add-row {
@@ -1194,25 +1185,13 @@ async function onAiMenuApplied(data) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 .tree-add-btn:hover { background: rgba(255, 255, 255, 0.34); }
 
-.btn-ai-menu {
-  width: 100%;
-  height: 30px;
-  border: none;
-  border-radius: 7px;
-  background: linear-gradient(135deg, #f59e0b 0%, #ec4899 100%);
-  color: #fff;
-  font-size: 0.8rem;
-  font-weight: 600;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(236, 72, 153, 0.3);
-}
-.btn-ai-menu:hover { filter: brightness(1.06); }
-
 .tree-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px 6px 12px;
 }
@@ -1367,13 +1346,15 @@ async function onAiMenuApplied(data) {
 .sub-node.drop-before { box-shadow: inset 0 2px 0 0 #10b981; }
 .sub-node.drop-after { box-shadow: inset 0 -2px 0 0 #10b981; }
 
-/* 右侧卡片工作区 */
+/* 右侧卡片工作区（flex: 1 + min-width: 0，防止宽表格撑爆页面） */
 .cards-pane {
   flex: 1;
   min-width: 0;
+  margin-top: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
+  box-sizing: border-box;
 }
 
 .cards-header {
@@ -1457,11 +1438,14 @@ async function onAiMenuApplied(data) {
 .add-input.desc-in { flex: 1.1 1 130px; max-width: 210px; }
 
 .cards-card {
+  width: 100%;
+  min-width: 0;
   background: #fff;
   border-radius: 14px;
   border: 1px solid #e2e8f0;
   box-shadow: 0 4px 18px rgba(15, 23, 42, 0.05);
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 .table-toolbar {
@@ -1538,9 +1522,17 @@ async function onAiMenuApplied(data) {
   font-size: 0.8rem;
 }
 
-.table-scroll { width: 100%; overflow-x: auto; }
+.table-scroll {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+}
 
-.card-table { width: 100%; border-collapse: collapse; }
+.card-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
 .card-table th,
 .card-table td {
   padding: 6px 7px;

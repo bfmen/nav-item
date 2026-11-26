@@ -167,7 +167,7 @@ function formatDate(value) {
 </script>
 
 <style scoped>
-.settings-page { max-width: 1180px; margin: 0 auto; padding: 12px 2vw 36px; color: #172033; }
+.settings-page { width: 100%; max-width: 1600px; margin: 0 auto; padding: 4px 0 36px; box-sizing: border-box; color: #172033; }
 .page-heading { margin-bottom: 24px; }
 .eyebrow { margin: 0 0 6px; color: #4f7cff; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
 h2, h3, p { margin-top: 0; }
