@@ -20,7 +20,7 @@
       </article>
 
       <article class="settings-card backup-card">
-        <div class="card-heading"><span class="card-icon">💾</span><div><h3>备份还原</h3><p>导出栏目、卡片、友链和账户数据，便于迁移与恢复。</p></div></div>
+        <div class="card-heading"><span class="card-icon">💾</span><div><h3>备份还原</h3><p>导出栏目、卡片和账户数据，便于迁移与恢复。</p></div></div>
         <div class="backup-actions">
           <button class="secondary-button" type="button" :disabled="backupLoading" @click="downloadBackup">{{ backupLoading ? '生成中…' : '下载本地备份' }}</button>
           <label class="secondary-button file-button">选择备份还原<input type="file" accept="application/json,.json" @change="restoreFromFile" /></label>
@@ -111,7 +111,7 @@ async function restoreFromFile(event) {
   if (!file) return;
   try {
     const data = JSON.parse(await file.text());
-    if (!window.confirm('还原后将覆盖当前栏目、卡片、友链和账户数据，确定继续吗？')) return;
+    if (!window.confirm('还原后将覆盖当前栏目、卡片和账户数据，确定继续吗？')) return;
     await restoreBackup(data);
     notify('备份还原成功，请刷新页面');
   } catch (error) { notify(error.response?.data?.message || '备份文件无效或还原失败', 'error'); }
@@ -143,7 +143,7 @@ async function loadWebdavBackups() {
 
 async function restoreFromWebdav() {
   if (!selectedWebdavUrl.value) return notify('请先读取并选择云端备份', 'error');
-  if (!window.confirm('还原后将覆盖当前栏目、卡片、友链和账户数据，确定继续吗？')) return;
+  if (!window.confirm('还原后将覆盖当前栏目、卡片和账户数据，确定继续吗？')) return;
   webdavRestoreLoading.value = true;
   try {
     await saveWebdavConfig(webdav.value);

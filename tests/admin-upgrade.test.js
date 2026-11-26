@@ -820,3 +820,220 @@ test('栏目 AI 整理、子菜单合并无损迁移卡片及 WebDAV 备份失�
     await close(db);
   }
 });
+
+test('AI 建议子菜单跨批次严格去重防冲突与批量同意接口', async () => {
+  // 1. 跨批次去重与冲突合并单元测试
+  const merged = aiModule.mergeBatchSuggestions(
+    [
+      {
+        suggested_sub_menus: [
+          // 同一已有子菜单 ID=12 在第 1 批与第 2 批出现冲突改名建议 -> 严禁重复，按支持卡片数合并为 1 条
+          {
+            action: 'rename',
+            parent_menu_id: 2,
+            parent_menu_name: 'AI Stuff',
+            target_sub_menu_id: 12,
+            old_name: 'Al chat',
+            name: 'AI Chat',
+            reason: '修正拼写错误',
+            card_ids: [101, 102, 103]
+          },
+          // 跨批次同名新增子菜单（大小写/空格差异）合并后达到 >= 3 张卡片 -> 合并为 1 条新增
+          {
+            action: 'create',
+            parent_menu_id: 2,
+            parent_menu_name: 'AI Stuff',
+            name: 'AI  Video',
+            reason: '批次1发现2张视频站',
+            card_ids: [201, 202]
+          }
+        ]
+      },
+      {
+        suggested_sub_menus: [
+          {
+            action: 'rename',
+            parent_menu_id: 2,
+            parent_menu_name: 'AI Stuff',
+            target_sub_menu_id: 12,
+            old_name: 'Al chat',
+            name: 'AI 对话',
+            reason: '中文化命名',
+            card_ids: [104]
+          },
+          {
+            action: 'create',
+            parent_menu_id: 2,
+            parent_menu_name: 'AI Stuff',
+            name: 'ai video',
+            reason: '批次2再发现2张视频站',
+            card_ids: [202, 203, 204]
+          },
+          // 不足 3 张卡片的新增建议仍应过滤
+          {
+            action: 'create',
+            parent_menu_id: 2,
+            parent_menu_name: 'AI Stuff',
+            name: '冷门零散',
+            reason: '仅2张',
+            card_ids: [301, 302]
+          }
+        ]
+      }
+    ],
+    [{ id: 2, name: 'AI Stuff' }],
+    [{ id: 12, parent_id: 2, name: 'Al chat' }]
+  );
+
+  assert.equal(merged.length, 2);
+  const renameItem = merged.find(item => item.action === 'rename');
+  const createItem = merged.find(item => item.action === 'create');
+  assert.ok(renameItem);
+  assert.equal(renameItem.target_sub_menu_id, 12);
+  assert.equal(renameItem.name, 'AI Chat'); // 3 张卡片支持度高于 1 张
+  assert.deepEqual(renameItem.card_ids.sort((a, b) => a - b), [101, 102, 103, 104]);
+
+  assert.ok(createItem);
+  assert.equal(createItem.parent_menu_id, 2);
+  assert.deepEqual(createItem.card_ids.sort((a, b) => a - b), [201, 202, 203, 204]);
+
+  // 2. 批量同意建议子菜单接口（同时执行新增 + 重命名）与栏目卡片计数校验
+  const db = await initMemoryDb();
+  let server;
+  const authCookie = `${COOKIE_NAME}=${jwt.sign({ id: 1, username: 'admin' }, JWT_SECRET, { expiresIn: 3600 })}`;
+  try {
+    await run(db, 'DELETE FROM cards');
+    await run(db, 'DELETE FROM sub_menus');
+    await run(db, 'DELETE FROM menus');
+
+    const mAi = (await run(db, 'INSERT INTO menus (name, "order") VALUES (?, ?)', ['AI Stuff', 1])).lastID;
+    const smOld = (await run(db, 'INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)', [mAi, 'Al chat', 1])).lastID;
+    await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, "order", is_deleted) VALUES (?, NULL, ?, ?, 1, 0)', [mAi, 'Direct1', 'https://d1.example']);
+    await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, "order", is_deleted) VALUES (?, ?, ?, ?, 1, 0)', [mAi, smOld, 'Chat1', 'https://c1.example']);
+    await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, "order", is_deleted) VALUES (?, ?, ?, ?, 2, 1)', [mAi, smOld, 'Deleted1', 'https://del.example']);
+
+    require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: db };
+    delete require.cache[require.resolve('../routes/ai')];
+    delete require.cache[require.resolve('../routes/menu')];
+    const { createAiRouter } = require('../routes/ai');
+    const menuRouter = require('../routes/menu');
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/ai', createAiRouter());
+    app.use('/api/menus', menuRouter);
+
+    server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const api = (endpoint, method = 'GET', body = null) => fetch(`${base}${endpoint}`, {
+      method,
+      headers: { Cookie: authCookie, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {})
+    });
+
+    const applyRes = await (await api('/api/ai/suggestions/apply', 'POST', {
+      suggestions: [
+        { action: 'rename', parent_menu_id: mAi, target_sub_menu_id: smOld, name: 'AI Chat' },
+        { action: 'create', parent_menu_id: mAi, name: 'AI Video' }
+      ]
+    })).json();
+    assert.equal(applyRes.applied.length, 2);
+    assert.equal(applyRes.applied.filter(i => i.action === 'rename').length, 1);
+    assert.equal(applyRes.applied.filter(i => i.action === 'create').length, 1);
+
+    const menusRes = await (await api('/api/menus')).json();
+    assert.equal(menusRes.length, 1);
+    assert.equal(menusRes[0].direct_card_count, 1);
+    assert.equal(menusRes[0].total_card_count, 2); // 排除已软删除卡片
+    assert.deepEqual(menusRes[0].subMenus.map(s => s.name), ['AI Chat', 'AI Video']);
+    assert.equal(menusRes[0].subMenus[0].card_count, 1);
+    assert.equal(menusRes[0].subMenus[1].card_count, 0);
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    delete require.cache[dbPath];
+    delete require.cache[require.resolve('../routes/ai')];
+    delete require.cache[require.resolve('../routes/menu')];
+    await close(db);
+  }
+});
+
+test('原子化全量覆盖备份与还原：严禁旧子菜单名残留并兼容旧版 v1 备份', async () => {
+  const db = await initMemoryDb();
+  const backupPath = require.resolve('../routes/backup');
+  try {
+    await run(db, 'DELETE FROM cards');
+    await run(db, 'DELETE FROM sub_menus');
+    await run(db, 'DELETE FROM menus');
+
+    const mHome = (await run(db, 'INSERT INTO menus (id, name, "order") VALUES (1, "Home", 1)')).lastID;
+    const mTools = (await run(db, 'INSERT INTO menus (id, name, "order") VALUES (2, "Tools", 2)')).lastID;
+    const smNet = (await run(db, 'INSERT INTO sub_menus (id, parent_id, name, "order") VALUES (10, ?, "网络测速", 1)', [mTools])).lastID;
+    const smDev = (await run(db, 'INSERT INTO sub_menus (id, parent_id, name, "order") VALUES (11, ?, "开发工具", 2)', [mTools])).lastID;
+
+    await run(db, 'INSERT INTO cards (id, menu_id, sub_menu_id, title, url, desc, "order", is_deleted) VALUES (100, ?, NULL, "GitHub", "https://github.com", "代码托管", 1, 0)', [mHome]);
+    await run(db, 'INSERT INTO cards (id, menu_id, sub_menu_id, title, url, desc, "order", is_deleted) VALUES (101, ?, ?, "ITDOG", "https://itdog.cn", "在线 TCPing", 1, 0)', [mTools, smNet]);
+    await run(db, 'INSERT INTO cards (id, menu_id, sub_menu_id, title, url, desc, "order", is_deleted, recycle_reason) VALUES (102, ?, ?, "旧站", "https://old.invalid", "", 2, 1, "dead_link")', [mTools, smDev]);
+
+    require.cache[dbPath] = { id: dbPath, filename: dbPath, loaded: true, exports: db };
+    delete require.cache[backupPath];
+    const backupModule = require('../routes/backup');
+
+    // 1. 导出 v2 快照
+    const snapshot = await backupModule.createBackup();
+    assert.equal(snapshot.schema_version, 2);
+    assert.equal(snapshot.tables.menus.length, 2);
+    assert.equal(snapshot.tables.sub_menus.length, 2);
+    assert.equal(snapshot.tables.cards.length, 3);
+
+    // 2. 模拟 AI 整理后发生大幅变更（重命名子菜单 + 新增子菜单 + 挪动卡片 + 新增卡片）
+    await run(db, 'UPDATE sub_menus SET name = "已改名残留子菜单" WHERE id = ?', [smNet]);
+    const extraSm = (await run(db, 'INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, "多余新增子菜单", 3)', [mTools])).lastID;
+    await run(db, 'UPDATE cards SET sub_menu_id = ? WHERE id = 101', [extraSm]);
+    await run(db, 'INSERT INTO cards (menu_id, sub_menu_id, title, url, "order", is_deleted) VALUES (?, NULL, "多余卡片", "https://extra.example", 9, 0)', [mHome]);
+
+    // 3. 执行原子化全量覆盖还原
+    await backupModule.restoreBackup(snapshot);
+
+    // 验证外键约束已在事务外恢复开启
+    const fkRows = await all(db, 'PRAGMA foreign_keys');
+    assert.equal(fkRows[0].foreign_keys, 1);
+
+    // 验证 menus / sub_menus / cards 与原快照 100% 一致，零旧名称或多余子菜单残留
+    const restoredMenus = await all(db, 'SELECT id, name, "order" FROM menus ORDER BY id ASC');
+    const restoredSubs = await all(db, 'SELECT id, parent_id, name, "order" FROM sub_menus ORDER BY id ASC');
+    const restoredCards = await all(db, 'SELECT id, menu_id, sub_menu_id, title, url, desc, "order", is_deleted, recycle_reason FROM cards ORDER BY id ASC');
+
+    assert.deepEqual(restoredMenus, [
+      { id: 1, name: 'Home', order: 1 },
+      { id: 2, name: 'Tools', order: 2 }
+    ]);
+    assert.deepEqual(restoredSubs, [
+      { id: 10, parent_id: 2, name: '网络测速', order: 1 },
+      { id: 11, parent_id: 2, name: '开发工具', order: 2 }
+    ]);
+    assert.deepEqual(restoredCards, [
+      { id: 100, menu_id: 1, sub_menu_id: null, title: 'GitHub', url: 'https://github.com', desc: '代码托管', order: 1, is_deleted: 0, recycle_reason: null },
+      { id: 101, menu_id: 2, sub_menu_id: 10, title: 'ITDOG', url: 'https://itdog.cn', desc: '在线 TCPing', order: 1, is_deleted: 0, recycle_reason: null },
+      { id: 102, menu_id: 2, sub_menu_id: 11, title: '旧站', url: 'https://old.invalid', desc: '', order: 2, is_deleted: 1, recycle_reason: 'dead_link' }
+    ]);
+
+    // 4. 兼容旧版 v1 备份文件（缺少 schema_version / is_deleted / recycle_reason 等字段）
+    const legacyV1Backup = {
+      format: 'nav-item-backup',
+      version: 1,
+      tables: {
+        menus: [{ id: 1, name: 'LegacyHome', order: 1 }],
+        sub_menus: [{ id: 5, parent_id: 1, name: 'LegacySub', order: 1 }],
+        cards: [{ id: 50, menu_id: 1, sub_menu_id: 5, title: 'LegacySite', url: 'https://legacy.example', desc: '老备份' }]
+      }
+    };
+    await backupModule.restoreBackup(legacyV1Backup);
+    const legacyCards = await all(db, 'SELECT id, title, is_deleted, recycle_reason FROM cards');
+    assert.deepEqual(legacyCards, [{ id: 50, title: 'LegacySite', is_deleted: 0, recycle_reason: null }]);
+  } finally {
+    delete require.cache[dbPath];
+    delete require.cache[backupPath];
+    await close(db);
+  }
+});

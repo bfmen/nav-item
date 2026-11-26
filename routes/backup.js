@@ -5,7 +5,8 @@ const authMiddleware = require('./authMiddleware');
 const db = require('../db');
 
 const router = express.Router();
-const TABLES = ['menus', 'sub_menus', 'cards', 'users', 'friends'];
+const SCHEMA_VERSION = 2;
+const REQUIRED_TABLES = ['menus', 'sub_menus', 'cards'];
 const MAX_WEBDAV_BACKUPS = 8;
 
 // 配置保存在服务端 SQLite 数据库，Docker 持久化 database 目录后即可跨刷新和重启保留。
@@ -33,68 +34,197 @@ const run = (sql, params = []) => new Promise((resolve, reject) => {
 });
 
 async function createBackup() {
-  const tables = {};
-  for (const table of TABLES) tables[table] = await all(`SELECT * FROM ${table}`);
-  const webdavConfig = await new Promise((resolve, reject) => {
-    db.get('SELECT url, username, password FROM webdav_config WHERE id = 1', (error, row) => {
-      if (error) reject(error);
-      else resolve(row || { url: '', username: '', password: '' });
-    });
-  });
+  const [menus, subMenus, cards, users] = await Promise.all([
+    all('SELECT id, name, "order" FROM menus ORDER BY "order" ASC, id ASC'),
+    all('SELECT id, parent_id, name, "order" FROM sub_menus ORDER BY parent_id ASC, "order" ASC, id ASC'),
+    all('SELECT id, menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order", COALESCE(is_deleted, 0) AS is_deleted, deleted_at, recycle_reason FROM cards ORDER BY id ASC'),
+    all('SELECT id, username, password, current_login_at, current_login_ip, last_login_at, last_login_ip FROM users ORDER BY id ASC')
+  ]);
+
   let aiConfigs = [];
   try {
-    aiConfigs = await all('SELECT id, name, base_url, api_key, model, is_active FROM ai_configs ORDER BY id ASC');
+    aiConfigs = await all('SELECT id, name, base_url, api_key, model, is_active, created_at, updated_at FROM ai_configs ORDER BY id ASC');
   } catch {
     aiConfigs = [];
   }
+
+  const webdavRow = await get('SELECT url, username, password FROM webdav_config WHERE id = 1').catch(() => null);
+  const webdavConfig = webdavRow || { url: '', username: '', password: '' };
+
+  const normalizedMenus = menus.map(m => ({
+    id: Number(m.id),
+    name: String(m.name || ''),
+    order: Number(m.order || 0),
+    sort: Number(m.order || 0)
+  }));
+
+  const normalizedSubMenus = subMenus.map(sm => ({
+    id: Number(sm.id),
+    parent_id: Number(sm.parent_id),
+    name: String(sm.name || ''),
+    order: Number(sm.order || 0),
+    sort: Number(sm.order || 0)
+  }));
+
+  const normalizedCards = cards.map(c => ({
+    id: Number(c.id),
+    menu_id: c.menu_id !== null && c.menu_id !== undefined ? Number(c.menu_id) : null,
+    sub_menu_id: c.sub_menu_id !== null && c.sub_menu_id !== undefined ? Number(c.sub_menu_id) : null,
+    title: String(c.title || ''),
+    url: String(c.url || ''),
+    logo_url: c.logo_url || '',
+    custom_logo_path: c.custom_logo_path || null,
+    desc: c.desc || '',
+    order: Number(c.order || 0),
+    sort: Number(c.order || 0),
+    is_deleted: c.is_deleted ? 1 : 0,
+    deleted_at: c.deleted_at || null,
+    recycle_reason: c.recycle_reason || null
+  }));
+
+  const normalizedAiConfigs = aiConfigs.map(cfg => ({
+    id: Number(cfg.id),
+    name: String(cfg.name || ''),
+    base_url: String(cfg.base_url || ''),
+    api_key: String(cfg.api_key || ''),
+    model: String(cfg.model || ''),
+    is_active: cfg.is_active ? 1 : 0,
+    created_at: cfg.created_at || null,
+    updated_at: cfg.updated_at || null
+  }));
+
   return {
     format: 'nav-item-backup',
-    version: 1,
+    schema_version: SCHEMA_VERSION,
+    version: SCHEMA_VERSION,
     createdAt: new Date().toISOString(),
-    tables,
+    tables: {
+      menus: normalizedMenus,
+      sub_menus: normalizedSubMenus,
+      cards: normalizedCards,
+      users,
+      ai_configs: normalizedAiConfigs
+    },
     webdavConfig,
-    aiConfigs
+    aiConfigs: normalizedAiConfigs
   };
 }
 
 function validBackup(value) {
-  return value && value.format === 'nav-item-backup' && value.tables &&
-    TABLES.every(table => Array.isArray(value.tables[table]));
+  return Boolean(
+    value &&
+    value.format === 'nav-item-backup' &&
+    value.tables &&
+    REQUIRED_TABLES.every(table => Array.isArray(value.tables[table]))
+  );
 }
 
+// 原子化全量覆盖还原：
+// 关键：SQLite 中 PRAGMA foreign_keys 必须在事务外（BEGIN TRANSACTION 之前）关闭，
+// 事务内关闭会被静默忽略导致外键冲突或残留。还原完成后在事务外恢复开启。
 async function restoreBackup(backup) {
   if (!validBackup(backup)) throw new Error('备份文件格式无效');
-  await run('BEGIN TRANSACTION');
+
+  const menus = backup.tables.menus || [];
+  const subMenus = backup.tables.sub_menus || [];
+  const cards = backup.tables.cards || [];
+  const users = Array.isArray(backup.tables.users) ? backup.tables.users : null;
+  const aiConfigs = Array.isArray(backup.tables.ai_configs)
+    ? backup.tables.ai_configs
+    : (Array.isArray(backup.aiConfigs) ? backup.aiConfigs : null);
+
+  await run('PRAGMA foreign_keys = OFF');
   try {
-    await run('PRAGMA foreign_keys = OFF');
-    for (const table of [...TABLES].reverse()) await run(`DELETE FROM ${table}`);
-    for (const row of backup.tables.menus) await run('INSERT INTO menus (id, name, "order") VALUES (?, ?, ?)', [row.id, row.name, row.order || 0]);
-    for (const row of backup.tables.sub_menus) await run('INSERT INTO sub_menus (id, parent_id, name, "order") VALUES (?, ?, ?, ?)', [row.id, row.parent_id, row.name, row.order || 0]);
-    for (const row of backup.tables.cards) await run('INSERT INTO cards (id, menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order", is_deleted, deleted_at, recycle_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [row.id, row.menu_id, row.sub_menu_id, row.title, row.url, row.logo_url, row.custom_logo_path, row.desc, row.order || 0, row.is_deleted ? 1 : 0, row.deleted_at || null, row.recycle_reason || null]);
-    for (const row of backup.tables.users) await run('INSERT INTO users (id, username, password, current_login_at, current_login_ip, last_login_at, last_login_ip) VALUES (?, ?, ?, ?, ?, ?, ?)', [row.id, row.username, row.password, row.current_login_at, row.current_login_ip, row.last_login_at, row.last_login_ip]);
-    for (const row of backup.tables.friends) await run('INSERT INTO friends (id, title, url, logo) VALUES (?, ?, ?, ?)', [row.id, row.title, row.url, row.logo]);
-    if (backup.webdavConfig && typeof backup.webdavConfig === 'object') {
-      const { url = '', username = '', password = '' } = backup.webdavConfig;
-      await run(`INSERT INTO webdav_config (id, url, username, password, updated_at) VALUES (1, ?, ?, ?, datetime('now'))
-        ON CONFLICT(id) DO UPDATE SET url=excluded.url, username=excluded.username, password=excluded.password, updated_at=excluded.updated_at`,
-      [String(url), String(username), String(password)]);
-    }
-    if (Array.isArray(backup.aiConfigs)) {
-      await run('DELETE FROM ai_configs');
-      for (const cfg of backup.aiConfigs) {
-        if (!cfg || !cfg.name || !cfg.base_url) continue;
+    await run('BEGIN IMMEDIATE TRANSACTION');
+    try {
+      // 彻底清空核心导航表，确保绝无旧子菜单名或重复记录残留
+      await run('DELETE FROM cards');
+      await run('DELETE FROM sub_menus');
+      await run('DELETE FROM menus');
+      if (users && users.length > 0) {
+        await run('DELETE FROM users');
+      }
+      if (aiConfigs !== null) {
+        await run('DELETE FROM ai_configs');
+      }
+      // 重置自增序列，避免历史最大 ID 干扰
+      await run("DELETE FROM sqlite_sequence WHERE name IN ('cards', 'sub_menus', 'menus')").catch(() => {});
+
+      for (const row of menus) {
+        const sortVal = Number(row.order ?? row.sort ?? 0) || 0;
         await run(
-          `INSERT INTO ai_configs (name, base_url, api_key, model, is_active, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-          [String(cfg.name), String(cfg.base_url), String(cfg.api_key || ''), String(cfg.model || ''), cfg.is_active ? 1 : 0]
+          'INSERT INTO menus (id, name, "order") VALUES (?, ?, ?)',
+          [Number(row.id), String(row.name || ''), sortVal]
         );
       }
+
+      for (const row of subMenus) {
+        const sortVal = Number(row.order ?? row.sort ?? 0) || 0;
+        await run(
+          'INSERT INTO sub_menus (id, parent_id, name, "order") VALUES (?, ?, ?, ?)',
+          [Number(row.id), Number(row.parent_id), String(row.name || ''), sortVal]
+        );
+      }
+
+      for (const row of cards) {
+        const sortVal = Number(row.order ?? row.sort ?? 0) || 0;
+        const descVal = row.desc !== undefined ? row.desc : (row.description !== undefined ? row.description : '');
+        const menuIdVal = row.menu_id !== null && row.menu_id !== undefined && row.menu_id !== '' ? Number(row.menu_id) : null;
+        const subMenuIdVal = row.sub_menu_id !== null && row.sub_menu_id !== undefined && row.sub_menu_id !== '' ? Number(row.sub_menu_id) : null;
+        await run(
+          'INSERT INTO cards (id, menu_id, sub_menu_id, title, url, logo_url, custom_logo_path, desc, "order", is_deleted, deleted_at, recycle_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            Number(row.id),
+            menuIdVal,
+            subMenuIdVal,
+            String(row.title || ''),
+            String(row.url || ''),
+            row.logo_url || '',
+            row.custom_logo_path || null,
+            String(descVal || ''),
+            sortVal,
+            row.is_deleted ? 1 : 0,
+            row.deleted_at || null,
+            row.recycle_reason || null
+          ]
+        );
+      }
+
+      if (users && users.length > 0) {
+        for (const row of users) {
+          await run(
+            'INSERT INTO users (id, username, password, current_login_at, current_login_ip, last_login_at, last_login_ip) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            [row.id, row.username, row.password, row.current_login_at || null, row.current_login_ip || null, row.last_login_at || null, row.last_login_ip || null]
+          );
+        }
+      }
+
+      if (backup.webdavConfig && typeof backup.webdavConfig === 'object') {
+        const { url = '', username = '', password = '' } = backup.webdavConfig;
+        await run(
+          `INSERT INTO webdav_config (id, url, username, password, updated_at) VALUES (1, ?, ?, ?, datetime('now'))
+           ON CONFLICT(id) DO UPDATE SET url=excluded.url, username=excluded.username, password=excluded.password, updated_at=excluded.updated_at`,
+          [String(url), String(username), String(password)]
+        );
+      }
+
+      if (aiConfigs !== null) {
+        for (const cfg of aiConfigs) {
+          if (!cfg || !cfg.name || !cfg.base_url) continue;
+          await run(
+            `INSERT INTO ai_configs (name, base_url, api_key, model, is_active, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+            [String(cfg.name), String(cfg.base_url), String(cfg.api_key || ''), String(cfg.model || ''), cfg.is_active ? 1 : 0]
+          );
+        }
+      }
+
+      await run('COMMIT');
+    } catch (error) {
+      await run('ROLLBACK').catch(() => {});
+      throw error;
     }
-    await run('PRAGMA foreign_keys = ON');
-    await run('COMMIT');
-  } catch (error) {
-    await run('ROLLBACK');
-    await run('PRAGMA foreign_keys = ON');
-    throw error;
+  } finally {
+    await run('PRAGMA foreign_keys = ON').catch(() => {});
   }
 }
 
@@ -107,8 +237,8 @@ function requestWebdav(target, method, username, password, body = '', extraHeade
       method,
       headers: {
         ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
-        ...(username ? { Authorization: `Basic ${Buffer.from(`${username}:${password || ''}`).toString('base64')}` } : {})
-        , ...extraHeaders
+        ...(username ? { Authorization: `Basic ${Buffer.from(`${username}:${password || ''}`).toString('base64')}` } : {}),
+        ...extraHeaders
       },
       timeout: 15000
     }, response => {
@@ -156,7 +286,6 @@ function buildWebdavBackupTarget(baseUrl, { prefix = 'nav-item-backup', now = ne
     return target;
   }
 
-  // 手动备份：若明确填写 .json 文件直接覆盖，否则在目录下生成带时间文件名
   if (!isJsonPath) {
     target.pathname = `${target.pathname.replace(/\/+$/, '')}/${prefix}-${stamp}.json`;
   }
@@ -265,12 +394,15 @@ router.get('/webdav/config', authMiddleware, (req, res) => {
 router.put('/webdav/config', authMiddleware, (req, res) => {
   const { url = '', username = '', password = '' } = req.body || {};
   if (url && !/^https?:\/\//i.test(url)) return res.status(400).json({ message: 'WebDAV 地址必须使用 HTTP 或 HTTPS' });
-  db.run(`INSERT INTO webdav_config (id, url, username, password, updated_at) VALUES (1, ?, ?, ?, datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET url=excluded.url, username=excluded.username, password=excluded.password, updated_at=excluded.updated_at`,
-  [url.trim(), username.trim(), password], error => {
-    if (error) return res.status(500).json({ message: '保存 WebDAV 配置失败' });
-    res.json({ message: 'WebDAV 配置已保存到服务器' });
-  });
+  db.run(
+    `INSERT INTO webdav_config (id, url, username, password, updated_at) VALUES (1, ?, ?, ?, datetime('now'))
+     ON CONFLICT(id) DO UPDATE SET url=excluded.url, username=excluded.username, password=excluded.password, updated_at=excluded.updated_at`,
+    [url.trim(), username.trim(), password],
+    error => {
+      if (error) return res.status(500).json({ message: '保存 WebDAV 配置失败' });
+      res.json({ message: 'WebDAV 配置已保存到服务器' });
+    }
+  );
 });
 
 router.post('/restore', authMiddleware, async (req, res) => {
@@ -319,6 +451,10 @@ router.post('/webdav/restore', authMiddleware, async (req, res) => {
   }
 });
 
+router.SCHEMA_VERSION = SCHEMA_VERSION;
+router.createBackup = createBackup;
+router.restoreBackup = restoreBackup;
+router.validBackup = validBackup;
 router.classifyBackupFilename = classifyBackupFilename;
 router.buildWebdavBackupTarget = buildWebdavBackupTarget;
 router.listWebdav = listWebdav;

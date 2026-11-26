@@ -41,6 +41,9 @@ function attachDisplayLogo(rows) {
     } else {
       card.display_logo = getLogoProxyUrl(card);
     }
+    card.order = Number(card.order || 0);
+    card.sort = card.order;
+    card.desc = card.desc || '';
   });
   return rows;
 }
@@ -59,7 +62,8 @@ const BASE_CARD_SELECT = `
 // 获取正常卡片列表（支持全部、按主菜单、按主菜单直属、按子菜单筛选，自动过滤已软删除卡片）
 router.get('/', async (req, res) => {
   try {
-    const { menuId, subMenuId } = req.query;
+    const menuId = req.query.menu_id ?? req.query.menuId;
+    const subMenuId = req.query.sub_menu_id ?? req.query.subMenuId;
     let query = '';
     let params = [];
 

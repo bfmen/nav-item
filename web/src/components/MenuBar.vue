@@ -1,30 +1,33 @@
 <template>
   <nav class="menu-bar">
-    <div 
-      v-for="menu in menus" 
-      :key="menu.id" 
+    <div
+      v-for="menu in menus"
+      :key="menu.id"
       class="menu-item"
       @mouseenter="showSubMenu(menu.id)"
       @mouseleave="hideSubMenu(menu.id)"
     >
-      <button 
-        @click="$emit('select', menu)" 
-        :class="{active: menu.id === activeId}"
+      <button
+        type="button"
+        @click="onSelectMain(menu)"
+        :class="{ active: menu.id === activeId }"
       >
-        {{ menu.name }}
+        <span>{{ menu.name }}</span>
+        <span v-if="menu.subMenus && menu.subMenus.length > 0" class="caret" aria-hidden="true">▾</span>
       </button>
-      
-      <!-- 二级菜单 -->
-      <div 
-        v-if="menu.subMenus && menu.subMenus.length > 0" 
+
+      <!-- 二级菜单：深色毛玻璃 + 最大高度滚动，防止子菜单过多溢出屏幕 -->
+      <div
+        v-if="menu.subMenus && menu.subMenus.length > 0"
         class="sub-menu"
-        :class="{ 'show': hoveredMenuId === menu.id }"
+        :class="{ show: hoveredMenuId === menu.id }"
       >
-        <button 
-          v-for="subMenu in menu.subMenus" 
+        <button
+          v-for="subMenu in menu.subMenus"
           :key="subMenu.id"
-          @click="$emit('select', subMenu, menu)"
-          :class="{active: subMenu.id === activeSubMenuId}"
+          type="button"
+          @click="onSelectSub(subMenu, menu)"
+          :class="{ active: subMenu.id === activeSubMenuId }"
           class="sub-menu-item"
         >
           {{ subMenu.name }}
@@ -37,25 +40,41 @@
 <script setup>
 import { ref } from 'vue';
 
-const props = defineProps({ 
-  menus: Array, 
+defineProps({
+  menus: {
+    type: Array,
+    default: () => []
+  },
   activeId: Number,
-  activeSubMenuId: Number 
+  activeSubMenuId: Number
 });
 
+const emit = defineEmits(['select']);
 const hoveredMenuId = ref(null);
+let hideTimer = null;
 
 function showSubMenu(menuId) {
+  window.clearTimeout(hideTimer);
   hoveredMenuId.value = menuId;
 }
 
 function hideSubMenu(menuId) {
-  // 延迟隐藏，给用户时间移动到子菜单
-  setTimeout(() => {
+  window.clearTimeout(hideTimer);
+  hideTimer = window.setTimeout(() => {
     if (hoveredMenuId.value === menuId) {
       hoveredMenuId.value = null;
     }
-  }, 100);
+  }, 120);
+}
+
+function onSelectMain(menu) {
+  hoveredMenuId.value = null;
+  emit('select', menu);
+}
+
+function onSelectSub(subMenu, menu) {
+  hoveredMenuId.value = null;
+  emit('select', subMenu, menu);
 }
 </script>
 
@@ -64,7 +83,8 @@ function hideSubMenu(menuId) {
   display: flex;
   justify-content: center;
   flex-wrap: wrap;
-  padding: 0 1rem;
+  padding: 0 3.2rem;
+  gap: 2px;
   position: relative;
 }
 
@@ -72,64 +92,90 @@ function hideSubMenu(menuId) {
   position: relative;
 }
 
-.menu-bar button {
+.menu-bar > .menu-item > button {
   background: transparent;
   border: none;
-  color: #fff;
-  font-size: 16px;
+  color: rgba(255, 255, 255, 0.94);
+  font-size: 15px;
   font-weight: 500;
-  padding: 0.8rem 2rem;
+  padding: 0.72rem 1.35rem;
   cursor: pointer;
-  transition: all 0.3s ease;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: color 0.2s ease, transform 0.2s ease;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
   box-shadow: none;
   border-radius: 8px;
   position: relative;
-  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
-.menu-bar button::before {
+.caret {
+  font-size: 11px;
+  opacity: 0.7;
+  line-height: 1;
+}
+
+.menu-bar > .menu-item > button::before {
   content: '';
   position: absolute;
-  bottom: 0;
+  bottom: 2px;
   left: 50%;
   width: 0;
   height: 2px;
-  background: #399dff;
-  transition: all 0.3s ease;
+  background: #60a5fa;
+  border-radius: 2px;
+  transition: width 0.22s ease;
   transform: translateX(-50%);
 }
 
-.menu-bar button:hover {
-  color: #399dff;
-  transform: translateY(-1px);
+.menu-bar > .menu-item > button:hover,
+.menu-bar > .menu-item > button.active {
+  color: #60a5fa;
 }
 
-.menu-bar button.active {
-  color: #399dff;
+.menu-bar > .menu-item > button.active::before {
+  width: 58%;
 }
 
-.menu-bar button.active::before {
-  width: 60%;
-}
-
-/* 二级菜单样式 */
+/* 深色毛玻璃二级菜单 + 独立滚动条 */
 .sub-menu {
   position: absolute;
   top: 100%;
   left: 50%;
-  transform: translateX(-50%);
-  background: #5c595900;
-  backdrop-filter: blur(8px);
-  border-radius: 6px;
-  min-width: 120px;
+  transform: translateX(-50%) translateY(-4px);
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 10px;
+  min-width: 156px;
+  max-width: 240px;
+  max-height: 68vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
   opacity: 0;
   visibility: hidden;
-  transition: all 0.2s ease;
+  transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
   z-index: 1000;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  margin-top: -2px; 
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  margin-top: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+}
+
+.sub-menu::-webkit-scrollbar {
+  width: 5px;
+}
+
+.sub-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sub-menu::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
 }
 
 .sub-menu.show {
@@ -139,55 +185,55 @@ function hideSubMenu(menuId) {
 }
 
 .sub-menu-item {
-  display: block !important;
-  width: 100% !important;
-  text-align: center !important;
-  padding: 0.4rem 1rem !important;
-  border: none !important;
-  background: transparent !important;
-  color: #fff !important;
-  font-size: 14px !important;
-  font-weight: 400 !important;
-  cursor: pointer !important;
-  transition: all 0.2s ease !important;
-  border-radius: 0 !important;
-  text-shadow: none !important;
-  line-height: 1.5 !important;
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  color: rgba(241, 245, 249, 0.92);
+  font-size: 13px;
+  font-weight: 400;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  border-radius: 6px;
+  text-shadow: none;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sub-menu-item:hover {
-  background: rgba(57, 157, 255, 0.25) !important;
-  color: #399dff !important;
-  transform: none !important;
+  background: rgba(59, 130, 246, 0.25);
+  color: #93c5fd;
 }
 
 .sub-menu-item.active {
-  background: rgba(57, 157, 255, 0.35) !important;
-  color: #399dff !important;
-  font-weight: 500 !important;
-}
-
-.sub-menu-item::before {
-  display: none;
+  background: rgba(59, 130, 246, 0.36);
+  color: #ffffff;
+  font-weight: 600;
 }
 
 @media (max-width: 768px) {
   .menu-bar {
-    gap: 0.2rem;
+    gap: 0.15rem;
+    padding: 0 2.6rem 0 0.6rem;
   }
-  
-  .menu-bar button {
-    font-size: 14px;
-    padding: .4rem .8rem;
+
+  .menu-bar > .menu-item > button {
+    font-size: 13px;
+    padding: 0.45rem 0.72rem;
   }
-  
+
   .sub-menu {
-    min-width: 100px;
+    min-width: 128px;
+    max-height: 55vh;
   }
-  
+
   .sub-menu-item {
-    font-size: 8px !important;
-    padding: 0.2rem 0.8rem !important;
+    font-size: 12px;
+    padding: 6px 10px;
   }
 }
-</style> 
+</style>

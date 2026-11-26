@@ -244,32 +244,70 @@
               </button>
             </div>
 
-            <!-- 建议新增子菜单提示区 -->
+            <!-- 建议新增/调整子菜单提示区（支持多选与一键批量同意） -->
             <div v-if="suggestedSubMenus.length" class="suggestion-panel">
               <div class="suggestion-header">
-                <strong>💡 AI 建议新增子菜单（仅作建议，点击确认创建后才生效）</strong>
+                <strong>💡 AI 建议新增/调整子菜单（共 {{ suggestedSubMenus.length }} 项，须确认后才生效）</strong>
+                <div class="suggestion-batch-actions" v-if="pendingSuggestions.length > 0">
+                  <button
+                    type="button"
+                    class="ai-btn ai-btn-xs ai-btn-ghost"
+                    :disabled="batchApplyingSuggestions"
+                    @click="toggleAllSuggestions"
+                  >
+                    {{ allPendingSuggestionsSelected ? '取消全选' : '全选' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="ai-btn ai-btn-xs ai-btn-primary"
+                    :disabled="batchApplyingSuggestions || selectedPendingSuggestionCount === 0"
+                    @click="handleBatchApproveSuggestions"
+                  >
+                    {{ batchApplyingSuggestions ? '批量处理中...' : `批量同意选中项 (${selectedPendingSuggestionCount})` }}
+                  </button>
+                </div>
               </div>
               <div class="suggestion-list">
-                <div v-for="(sug, idx) in suggestedSubMenus" :key="`${sug.parent_menu_id}-${sug.name}`" class="suggestion-item">
+                <div
+                  v-for="(sug, idx) in suggestedSubMenus"
+                  :key="sug.key || `${sug.parent_menu_id}-${sug.name}`"
+                  :class="['suggestion-item', { applied: sug.created }]"
+                >
+                  <div class="suggestion-check">
+                    <input
+                      type="checkbox"
+                      :disabled="sug.created || batchApplyingSuggestions"
+                      :checked="sug.created || selectedSuggestionKeys.has(sug.key)"
+                      @change="toggleSuggestionKey(sug.key)"
+                    />
+                  </div>
                   <div class="suggestion-info">
                     <div class="suggestion-title">
-                      <span class="cat-badge new">{{ sug.parent_menu_name }} / {{ sug.name }}</span>
+                      <span :class="['action-type-tag', sug.action === 'rename' ? 'rename' : 'create']">
+                        {{ sug.action === 'rename' ? '重命名子菜单' : '新增子菜单' }}
+                      </span>
+                      <template v-if="sug.action === 'rename'">
+                        <span class="cat-badge old">{{ sug.parent_menu_name }} / {{ sug.old_name }}</span>
+                        <span class="diff-arrow">→</span>
+                        <span class="cat-badge new">{{ sug.parent_menu_name }} / {{ sug.name }}</span>
+                      </template>
+                      <span v-else class="cat-badge new">{{ sug.parent_menu_name }} / {{ sug.name }}</span>
                       <span class="suggestion-reason">{{ sug.reason }}</span>
                     </div>
-                    <div class="suggestion-cards">
+                    <div v-if="sug.card_ids?.length" class="suggestion-cards">
                       涉及 {{ sug.card_ids.length }} 张卡片：{{ sug.card_titles.join('、') }}
                     </div>
                   </div>
                   <div class="suggestion-action">
-                    <span v-if="sug.created" class="created-tag">✓ 已创建并关联</span>
+                    <span v-if="sug.created" class="created-tag">✓ 已生效并关联</span>
                     <button
                       v-else
                       type="button"
-                      class="ai-btn ai-btn-sm ai-btn-outline"
-                      :disabled="creatingSubIndex === idx"
-                      @click="handleConfirmCreateSubMenu(sug, idx)"
+                      class="ai-btn ai-btn-xs ai-btn-outline"
+                      :disabled="batchApplyingSuggestions || creatingSubIndex === idx"
+                      @click="handleApproveSingleSuggestion(sug, idx)"
                     >
-                      {{ creatingSubIndex === idx ? '创建中...' : '确认创建并关联卡片' }}
+                      {{ creatingSubIndex === idx ? '处理中...' : (sug.action === 'rename' ? '同意更名' : '同意创建') }}
                     </button>
                   </div>
                 </div>
@@ -496,7 +534,7 @@ import {
   getAiOrganizeStatus,
   cancelAiOrganize,
   applyAiOrganize,
-  addSubMenu,
+  applyAiSuggestions,
   getWebdavConfig
 } from '../api';
 
@@ -548,6 +586,8 @@ const selectedUpdateIds = ref([]);
 const diffRecycles = ref([]);
 const selectedRecycleIds = ref([]);
 const suggestedSubMenus = ref([]);
+const selectedSuggestionKeys = ref(new Set());
+const batchApplyingSuggestions = ref(false);
 const creatingSubIndex = ref(-1);
 const probeStats = ref({ total: 0, reachable: 0, waf_403: 0, suspected_dead: 0, suspected_expired: 0 });
 const previewMeta = ref({ totalAnalyzed: 0, totalProbed: 0, model: '' });
@@ -569,6 +609,14 @@ const allRecyclesSelected = computed(() =>
 );
 const someRecyclesSelected = computed(() =>
   selectedRecycleIds.value.length > 0 && selectedRecycleIds.value.length < diffRecycles.value.length
+);
+
+const pendingSuggestions = computed(() => suggestedSubMenus.value.filter(s => !s.created));
+const selectedPendingSuggestionCount = computed(() =>
+  pendingSuggestions.value.filter(s => selectedSuggestionKeys.value.has(s.key)).length
+);
+const allPendingSuggestionsSelected = computed(() =>
+  pendingSuggestions.value.length > 0 && selectedPendingSuggestionCount.value === pendingSuggestions.value.length
 );
 
 function setNotice(text, type = 'info') {
@@ -795,7 +843,13 @@ async function handleDeleteConfig(cfg) {
 function applyOrganizeResult(data) {
   diffUpdates.value = data.updates || data.changes || [];
   diffRecycles.value = data.recycles || [];
-  suggestedSubMenus.value = (data.suggested_sub_menus || []).map(s => ({ ...s, created: false }));
+  suggestedSubMenus.value = (data.suggested_sub_menus || []).map((s, idx) => ({
+    ...s,
+    key: s.key || `${s.action || 'create'}:${s.target_sub_menu_id || s.parent_menu_id}:${s.name}:${idx}`,
+    action: s.action || (s.target_sub_menu_id ? 'rename' : 'create'),
+    created: false
+  }));
+  selectedSuggestionKeys.value = new Set(suggestedSubMenus.value.map(s => s.key));
   selectedUpdateIds.value = diffUpdates.value
     .filter(item => item.changed_fields && item.changed_fields.length > 0)
     .map(item => item.id);
@@ -920,57 +974,105 @@ async function handleCancelTask() {
   setNotice('整理任务已取消', 'info');
 }
 
-async function handleConfirmCreateSubMenu(sug, idx) {
-  if (!window.confirm(`确定要在「${sug.parent_menu_name}」下新建子菜单「${sug.name}」并将涉及的 ${sug.card_ids.length} 张卡片关联到该子菜单吗？`)) {
-    return;
-  }
-  creatingSubIndex.value = idx;
-  clearNotice();
-  try {
-    const { data } = await addSubMenu(sug.parent_menu_id, { name: sug.name, order: 99 });
-    const newSubMenuId = data.id;
-    sug.created = true;
-    createdAnySubMenu.value = true;
+function toggleSuggestionKey(key) {
+  const next = new Set(selectedSuggestionKeys.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  selectedSuggestionKeys.value = next;
+}
 
-    const newCategoryLabel = `${sug.parent_menu_name} / ${sug.name}`;
-    for (let i = 0; i < sug.card_ids.length; i++) {
-      const cardId = sug.card_ids[i];
+function toggleAllSuggestions() {
+  if (allPendingSuggestionsSelected.value) {
+    selectedSuggestionKeys.value = new Set();
+  } else {
+    selectedSuggestionKeys.value = new Set(pendingSuggestions.value.map(s => s.key));
+  }
+}
+
+function syncAppliedSuggestionsToDiff(appliedList) {
+  for (const res of appliedList) {
+    const targetSug = suggestedSubMenus.value.find(s => s.key === res.key);
+    if (targetSug) targetSug.created = true;
+    const newCategoryLabel = `${res.parent_menu_name} / ${res.name}`;
+    const cardIds = Array.isArray(res.card_ids) ? res.card_ids : [];
+    const cardTitles = Array.isArray(res.card_titles) ? res.card_titles : [];
+
+    for (let i = 0; i < cardIds.length; i++) {
+      const cardId = cardIds[i];
       const existing = diffUpdates.value.find(item => item.id === cardId);
       if (existing) {
-        existing.new_menu_id = sug.parent_menu_id;
-        existing.new_sub_menu_id = newSubMenuId;
+        existing.new_menu_id = res.parent_menu_id;
+        existing.new_sub_menu_id = res.sub_menu_id;
         existing.new_category = newCategoryLabel;
         existing.needs_review = false;
         if (!existing.changed_fields.includes('category')) {
           existing.changed_fields = ['category', ...existing.changed_fields];
         }
-        existing.reason = `归入新建子菜单「${sug.name}」`;
-      } else {
+        existing.reason = res.action === 'rename'
+          ? `子菜单已更名为「${res.name}」`
+          : `归入新建子菜单「${res.name}」`;
+      } else if (res.action === 'create') {
         diffUpdates.value.push({
           id: cardId,
           url: '',
           old_menu_id: null,
           old_sub_menu_id: null,
           old_category: '原分类',
-          new_menu_id: sug.parent_menu_id,
-          new_sub_menu_id: newSubMenuId,
+          new_menu_id: res.parent_menu_id,
+          new_sub_menu_id: res.sub_menu_id,
           new_category: newCategoryLabel,
-          old_title: sug.card_titles[i] || `卡片 #${cardId}`,
-          new_title: sug.card_titles[i] || `卡片 #${cardId}`,
+          old_title: cardTitles[i] || `卡片 #${cardId}`,
+          new_title: cardTitles[i] || `卡片 #${cardId}`,
           old_desc: '',
           new_desc: '',
           changed_fields: ['category'],
           needs_review: false,
-          reason: `归入新建子菜单「${sug.name}」`
+          reason: `归入新建子菜单「${res.name}」`
         });
       }
-      if (!selectedUpdateIds.value.includes(cardId)) {
+      if (!selectedUpdateIds.value.includes(cardId) && diffUpdates.value.some(item => item.id === cardId)) {
         selectedUpdateIds.value = [...selectedUpdateIds.value, cardId];
       }
     }
-    setNotice(`已创建子菜单「${newCategoryLabel}」并更新预览，请点击下方「应用更改」完成归类`, 'success');
+  }
+}
+
+async function handleBatchApproveSuggestions() {
+  const chosen = pendingSuggestions.value.filter(s => selectedSuggestionKeys.value.has(s.key));
+  if (!chosen.length) {
+    setNotice('请至少勾选一条子菜单建议', 'error');
+    return;
+  }
+  if (!window.confirm(`确定要批量同意选中的 ${chosen.length} 条子菜单建议并自动关联涉及卡片吗？`)) return;
+  batchApplyingSuggestions.value = true;
+  clearNotice();
+  try {
+    const { data } = await applyAiSuggestions(chosen);
+    createdAnySubMenu.value = true;
+    syncAppliedSuggestionsToDiff(data.applied || []);
+    selectedSuggestionKeys.value = new Set(pendingSuggestions.value.map(s => s.key));
+    setNotice(`已批量同意 ${data.applied?.length || chosen.length} 条子菜单建议并更新预览，请点击下方「应用更改」落库卡片归属`, 'success');
   } catch (err) {
-    setNotice(formatRequestError(err, '创建子菜单失败'), 'error');
+    setNotice(formatRequestError(err, '批量同意子菜单建议失败'), 'error');
+  } finally {
+    batchApplyingSuggestions.value = false;
+  }
+}
+
+async function handleApproveSingleSuggestion(sug, idx) {
+  const actionText = sug.action === 'rename'
+    ? `将「${sug.parent_menu_name} / ${sug.old_name}」更名为「${sug.name}」`
+    : `在「${sug.parent_menu_name}」下新建子菜单「${sug.name}」并关联 ${sug.card_ids.length} 张卡片`;
+  if (!window.confirm(`确定要${actionText}吗？`)) return;
+  creatingSubIndex.value = idx;
+  clearNotice();
+  try {
+    const { data } = await applyAiSuggestions([sug]);
+    createdAnySubMenu.value = true;
+    syncAppliedSuggestionsToDiff(data.applied || []);
+    setNotice(`已生效「${sug.parent_menu_name} / ${sug.name}」并更新预览`, 'success');
+  } catch (err) {
+    setNotice(formatRequestError(err, '处理子菜单建议失败'), 'error');
   } finally {
     creatingSubIndex.value = -1;
   }
@@ -1509,12 +1611,21 @@ async function handleClose() {
   padding: 10px 14px;
 }
 
-.suggestion-header { font-size: 0.84rem; color: #92400e; margin-bottom: 8px; }
+.suggestion-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 0.84rem;
+  color: #92400e;
+  margin-bottom: 8px;
+}
+.suggestion-batch-actions { display: flex; align-items: center; gap: 6px; }
 .suggestion-list { display: flex; flex-direction: column; gap: 8px; }
 .suggestion-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   background: #fff;
   border: 1px solid #fef3c7;
@@ -1522,6 +1633,17 @@ async function handleClose() {
   padding: 8px 10px;
   flex-wrap: wrap;
 }
+.suggestion-item.applied { opacity: 0.72; background: #f8fafc; }
+.suggestion-check { display: flex; align-items: center; }
+.suggestion-info { flex: 1; min-width: 200px; }
+.action-type-tag {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.action-type-tag.create { background: #dcfce7; color: #166534; }
+.action-type-tag.rename { background: #fef3c7; color: #92400e; }
 .suggestion-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .suggestion-reason { font-size: 0.8rem; color: #475569; }
 .suggestion-cards { font-size: 0.76rem; color: #64748b; margin-top: 3px; }

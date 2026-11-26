@@ -38,13 +38,11 @@
     <aside class="admin-sider" :class="{ open: siderOpen }" @click.self="closeSider">
       <div class="logo clickable" @click="page='welcome'; closeSider()">Admin</div>
       <ul class="menu-list">
-        <li :class="{active: page==='menu'}" @click="page='menu'; closeSider()">栏目管理</li>
-        <li :class="{active: page==='card'}" @click="page='card'; closeSider()">卡片管理</li>
+        <li :class="{active: page==='nav'}" @click="page='nav'; closeSider()">导航管理</li>
         <li :class="['menu-with-badge', {active: page==='recycle'}]" @click="page='recycle'; closeSider()">
           <span>回收站</span>
           <span v-if="recycleCount > 0" class="sider-badge">{{ recycleCount > 99 ? '99+' : recycleCount }}</span>
         </li>
-        <li :class="{active: page==='friend'}" @click="page='friend'; closeSider()">友链管理</li>
         <li :class="{active: page==='user'}" @click="page='user'; closeSider()">用户管理</li>
       </ul>
     </aside>
@@ -81,14 +79,12 @@
             </div>
           </div>
         </div>
-        <MenuManage v-if="page==='menu'" />
-        <CardManage v-if="page==='card'" />
+        <NavManage v-if="page==='nav'" />
         <RecycleBin v-if="page==='recycle'" />
-        <FriendLinkManage v-if="page==='friend'" />
         <UserManage v-if="page==='user'" />
       </div>
       <footer class="admin-footer">
-        <p class="admin-copyright">Copyright © 2025 Nav-Item | <a href="https://github.com/eooce/Nav-Item" target="_blank" class="footer-link">Powered by eooce</a></p>
+        <p class="admin-copyright">Nav-Item 后台管理</p>
       </footer>
     </main>
   </div>
@@ -97,13 +93,11 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { login, logout as apiLogout, getLoginInfo, getRecycleCount } from '../api';
-import MenuManage from './admin/MenuManage.vue';
-import CardManage from './admin/CardManage.vue';
+import NavManage from './admin/NavManage.vue';
 import RecycleBin from './admin/RecycleBin.vue';
-import FriendLinkManage from './admin/FriendLinkManage.vue';
 import UserManage from './admin/UserManage.vue';
 
-const page = ref('welcome');
+const page = ref('nav');
 const recycleCount = ref(0);
 const lastLoginTime = ref('');
 const lastLoginIp = ref('');
@@ -118,12 +112,10 @@ const siderOpen = ref(false);
 
 const pageTitle = computed(() => {
   switch (page.value) {
-    case 'menu': return '栏目管理';
-    case 'card': return '卡片管理';
+    case 'nav': return '导航管理';
     case 'recycle': return '回收站';
-    case 'friend': return '友链管理';
     case 'user': return '用户管理';
-    default: return '';
+    default: return '控制台';
   }
 });
 
@@ -139,7 +131,7 @@ async function refreshRecycleCount() {
 
 function resetSession() {
   isLoggedIn.value = false;
-  page.value = 'welcome';
+  page.value = 'nav';
   recycleCount.value = 0;
   lastLoginTime.value = '';
   lastLoginIp.value = '';

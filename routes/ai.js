@@ -721,7 +721,14 @@ function formatCategoryLabel(menuId, subMenuId, menuById, subMenuById) {
   return '未分类';
 }
 
-function computeOrganizePlan(cards, rawOutput, menus, subMenus, probeMap = new Map(), { protectMainDirect = false } = {}) {
+function normalizeSuggestionName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-_/·・（）()【】[\]]+/g, '');
+}
+
+function computeOrganizePlan(cards, rawOutput, menus, subMenus, probeMap = new Map(), { protectMainDirect = false, minCardsForCreate = 3 } = {}) {
   const menuById = new Map(menus.map(m => [Number(m.id), m]));
   const subMenuById = new Map(subMenus.map(sm => [Number(sm.id), sm]));
   const cardById = new Map(cards.map(c => [Number(c.id), c]));
@@ -851,32 +858,65 @@ function computeOrganizePlan(cards, rawOutput, menus, subMenus, probeMap = new M
   for (const sm of subMenus) {
     const pid = Number(sm.parent_id);
     if (!existingSubNamesByParent.has(pid)) existingSubNamesByParent.set(pid, new Set());
-    existingSubNamesByParent.get(pid).add(String(sm.name || '').trim().toLowerCase());
+    existingSubNamesByParent.get(pid).add(normalizeSuggestionName(sm.name));
   }
 
   const suggestedSubMenus = [];
-  const seenSuggestionKeys = new Set();
+  const seenRenameSubIds = new Set();
+  const seenCreateKeys = new Set();
+
   for (const sug of rawSuggestions) {
     if (!sug || typeof sug !== 'object') continue;
-    const parentId = Number(sug.parent_menu_id);
-    const name = String(sug.name || '').trim();
-    if (!menuById.has(parentId) || !name) continue;
-    const lowerName = name.toLowerCase();
-    if (existingSubNamesByParent.get(parentId)?.has(lowerName)) continue;
+    const name = String(sug.name || sug.new_name || '').trim();
+    if (!name) continue;
 
-    const dedupeKey = `${parentId}:${lowerName}`;
-    if (seenSuggestionKeys.has(dedupeKey)) continue;
+    const targetSubId = sug.target_sub_menu_id !== null && sug.target_sub_menu_id !== undefined && sug.target_sub_menu_id !== ''
+      ? Number(sug.target_sub_menu_id)
+      : (sug.sub_menu_id !== null && sug.sub_menu_id !== undefined && sug.sub_menu_id !== '' ? Number(sug.sub_menu_id) : null);
+    const isRename = (sug.action === 'rename' || Boolean(targetSubId)) && targetSubId && subMenuById.has(targetSubId);
 
     const validCardIds = [...new Set((Array.isArray(sug.card_ids) ? sug.card_ids : []).map(Number))]
       .filter(id => cardById.has(id) && !recycledIdSet.has(id));
-    if (validCardIds.length < 3) continue;
 
-    seenSuggestionKeys.add(dedupeKey);
+    if (isRename) {
+      const existingSub = subMenuById.get(targetSubId);
+      const parentId = Number(existingSub.parent_id);
+      if (name === existingSub.name || seenRenameSubIds.has(targetSubId)) continue;
+      seenRenameSubIds.add(targetSubId);
+      suggestedSubMenus.push({
+        key: `rename:${targetSubId}`,
+        action: 'rename',
+        target_sub_menu_id: targetSubId,
+        old_name: existingSub.name,
+        parent_menu_id: parentId,
+        parent_menu_name: menuById.get(parentId)?.name || '',
+        name,
+        reason: typeof sug.reason === 'string' && sug.reason.trim() ? sug.reason.trim() : `建议将子菜单「${existingSub.name}」更名为「${name}」`,
+        card_ids: validCardIds,
+        card_titles: validCardIds.map(id => cardById.get(id).title)
+      });
+      continue;
+    }
+
+    const parentId = Number(sug.parent_menu_id);
+    if (!menuById.has(parentId)) continue;
+    const normName = normalizeSuggestionName(name);
+    if (!normName || existingSubNamesByParent.get(parentId)?.has(normName)) continue;
+
+    const dedupeKey = `create:${parentId}:${normName}`;
+    if (seenCreateKeys.has(dedupeKey)) continue;
+    if (validCardIds.length < minCardsForCreate) continue;
+
+    seenCreateKeys.add(dedupeKey);
     suggestedSubMenus.push({
+      key: dedupeKey,
+      action: 'create',
+      target_sub_menu_id: null,
+      old_name: '',
       parent_menu_id: parentId,
       parent_menu_name: menuById.get(parentId).name,
       name,
-      reason: typeof sug.reason === 'string' ? sug.reason.trim() : `发现 ${validCardIds.length} 张相似类型卡片`,
+      reason: typeof sug.reason === 'string' && sug.reason.trim() ? sug.reason.trim() : `发现 ${validCardIds.length} 张相似类型卡片`,
       card_ids: validCardIds,
       card_titles: validCardIds.map(id => cardById.get(id).title)
     });
@@ -1550,42 +1590,109 @@ function computeMenuOrganizePlan(rawOutput, menus, subMenus, cardStats) {
 
 function mergeBatchSuggestions(plans, menus, subMenus) {
   const existingSubNamesByParent = new Map();
+  const subMenuById = new Map();
   for (const sm of subMenus) {
     const pid = Number(sm.parent_id);
+    subMenuById.set(Number(sm.id), sm);
     if (!existingSubNamesByParent.has(pid)) existingSubNamesByParent.set(pid, new Set());
-    existingSubNamesByParent.get(pid).add(String(sm.name || '').trim().toLowerCase());
+    existingSubNamesByParent.get(pid).add(normalizeSuggestionName(sm.name));
   }
   const menuById = new Map(menus.map(m => [Number(m.id), m]));
-  const merged = new Map();
+
+  // 1) 重命名建议严格按 target_sub_menu_id 去重防冲突（同一现有子菜单绝不输出多条冲突改名）
+  const renameBySubId = new Map();
+  // 2) 新增建议严格按 parent_menu_id + 规范化名称 去重合并
+  const createByKey = new Map();
 
   for (const plan of plans) {
     if (!plan?.suggested_sub_menus) continue;
     for (const sug of plan.suggested_sub_menus) {
-      const key = `${sug.parent_menu_id}:${String(sug.name || '').trim().toLowerCase()}`;
-      if (existingSubNamesByParent.get(sug.parent_menu_id)?.has(String(sug.name || '').trim().toLowerCase())) continue;
-      if (!merged.has(key)) {
-        merged.set(key, {
-          parent_menu_id: sug.parent_menu_id,
-          parent_menu_name: menuById.get(sug.parent_menu_id)?.name || sug.parent_menu_name,
-          name: sug.name,
-          reason: sug.reason,
-          card_ids: [...sug.card_ids],
-          card_titles: [...sug.card_titles]
+      if (!sug || typeof sug !== 'object') continue;
+      const action = sug.action === 'rename' || sug.target_sub_menu_id ? 'rename' : 'create';
+      const name = String(sug.name || '').trim();
+      if (!name) continue;
+
+      if (action === 'rename') {
+        const subId = Number(sug.target_sub_menu_id);
+        const existingSub = subMenuById.get(subId);
+        if (!existingSub || name === existingSub.name) continue;
+        const parentId = Number(existingSub.parent_id);
+        const cardIds = Array.isArray(sug.card_ids) ? sug.card_ids : [];
+        const cardTitles = Array.isArray(sug.card_titles) ? sug.card_titles : [];
+
+        if (!renameBySubId.has(subId)) {
+          renameBySubId.set(subId, {
+            key: `rename:${subId}`,
+            action: 'rename',
+            target_sub_menu_id: subId,
+            old_name: existingSub.name,
+            parent_menu_id: parentId,
+            parent_menu_name: menuById.get(parentId)?.name || sug.parent_menu_name || '',
+            name,
+            reason: sug.reason || `建议更名为「${name}」`,
+            card_ids: [...cardIds],
+            card_titles: [...cardTitles],
+            _bestWeight: cardIds.length
+          });
+        } else {
+          const prev = renameBySubId.get(subId);
+          // 冲突解决：若后续批次候选名关联卡片数更多，采用票数更高的名称；始终只保留一条记录
+          if (cardIds.length > prev._bestWeight) {
+            prev.name = name;
+            if (sug.reason) prev.reason = sug.reason;
+            prev._bestWeight = cardIds.length;
+          }
+          const existingIds = new Set(prev.card_ids);
+          cardIds.forEach((id, idx) => {
+            if (!existingIds.has(id)) {
+              existingIds.add(id);
+              prev.card_ids.push(id);
+              prev.card_titles.push(cardTitles[idx] || `#${id}`);
+            }
+          });
+        }
+        continue;
+      }
+
+      const parentId = Number(sug.parent_menu_id);
+      if (!menuById.has(parentId)) continue;
+      const normName = normalizeSuggestionName(name);
+      if (!normName || existingSubNamesByParent.get(parentId)?.has(normName)) continue;
+
+      const key = `create:${parentId}:${normName}`;
+      const cardIds = Array.isArray(sug.card_ids) ? sug.card_ids : [];
+      const cardTitles = Array.isArray(sug.card_titles) ? sug.card_titles : [];
+
+      if (!createByKey.has(key)) {
+        createByKey.set(key, {
+          key,
+          action: 'create',
+          target_sub_menu_id: null,
+          old_name: '',
+          parent_menu_id: parentId,
+          parent_menu_name: menuById.get(parentId)?.name || sug.parent_menu_name || '',
+          name,
+          reason: sug.reason || '',
+          card_ids: [...cardIds],
+          card_titles: [...cardTitles]
         });
       } else {
-        const prev = merged.get(key);
+        const prev = createByKey.get(key);
         const existingIds = new Set(prev.card_ids);
-        sug.card_ids.forEach((id, idx) => {
+        cardIds.forEach((id, idx) => {
           if (!existingIds.has(id)) {
             existingIds.add(id);
             prev.card_ids.push(id);
-            prev.card_titles.push(sug.card_titles[idx] || `#${id}`);
+            prev.card_titles.push(cardTitles[idx] || `#${id}`);
           }
         });
       }
     }
   }
-  return [...merged.values()].filter(s => s.card_ids.length >= 3);
+
+  const renames = [...renameBySubId.values()].map(({ _bestWeight, ...rest }) => rest);
+  const creates = [...createByKey.values()].filter(s => s.card_ids.length >= 3);
+  return [...renames, ...creates];
 }
 
 function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null, backupImpl = null } = {}) {
@@ -1847,7 +1954,8 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null, backup
             throw parseErr;
           }
           return computeOrganizePlan(batch, parsed, menus, subMenus, probeMap, {
-            protectMainDirect: params.protectMainDirect
+            protectMainDirect: params.protectMainDirect,
+            minCardsForCreate: 1
           });
         } catch (err) {
           if (err?.isCancelled || signal?.aborted) throw createAbortError();
@@ -2552,6 +2660,95 @@ function createAiRouter({ fetchImpl = globalThis.fetch, probeImpl = null, backup
     }
   });
 
+  // 批量同意 AI 建议的新增 / 重命名子菜单（单事务执行，去重防冲突）
+  router.post('/suggestions/apply', auth, async (req, res) => {
+    const suggestions = Array.isArray(req.body?.suggestions) ? req.body.suggestions : [];
+    if (!suggestions.length) {
+      return res.status(400).json({ message: '请至少勾选一条子菜单建议' });
+    }
+
+    try {
+      const menus = await all('SELECT id, name FROM menus');
+      const subMenus = await all('SELECT id, parent_id, name FROM sub_menus');
+      const menuById = new Map(menus.map(m => [Number(m.id), m]));
+      const subMenuById = new Map(subMenus.map(sm => [Number(sm.id), sm]));
+
+      await run('BEGIN TRANSACTION');
+      const applied = [];
+      const handledRenameIds = new Set();
+      const createdByKey = new Map();
+
+      for (const item of suggestions) {
+        if (!item || typeof item !== 'object') continue;
+        const name = String(item.name || '').trim();
+        if (!name) continue;
+        const action = item.action === 'rename' || item.target_sub_menu_id ? 'rename' : 'create';
+
+        if (action === 'rename') {
+          const subId = Number(item.target_sub_menu_id);
+          const existingSub = subMenuById.get(subId);
+          if (!existingSub || handledRenameIds.has(subId)) continue;
+          handledRenameIds.add(subId);
+          await run('UPDATE sub_menus SET name = ? WHERE id = ?', [name, subId]);
+          const parentId = Number(existingSub.parent_id);
+          applied.push({
+            key: item.key || `rename:${subId}`,
+            action: 'rename',
+            sub_menu_id: subId,
+            parent_menu_id: parentId,
+            parent_menu_name: menuById.get(parentId)?.name || item.parent_menu_name || '',
+            old_name: existingSub.name,
+            name,
+            card_ids: Array.isArray(item.card_ids) ? item.card_ids.map(Number).filter(n => n > 0) : [],
+            card_titles: Array.isArray(item.card_titles) ? item.card_titles : []
+          });
+          continue;
+        }
+
+        const parentId = Number(item.parent_menu_id);
+        if (!menuById.has(parentId)) continue;
+        const normKey = `${parentId}:${normalizeSuggestionName(name)}`;
+
+        let subMenuId;
+        if (createdByKey.has(normKey)) {
+          subMenuId = createdByKey.get(normKey);
+        } else {
+          const existingSame = subMenus.find(
+            sm => Number(sm.parent_id) === parentId && normalizeSuggestionName(sm.name) === normalizeSuggestionName(name)
+          );
+          if (existingSame) {
+            subMenuId = Number(existingSame.id);
+          } else {
+            const maxRow = await get('SELECT COALESCE(MAX("order"), 0) AS maxOrder FROM sub_menus WHERE parent_id = ?', [parentId]);
+            const insertRes = await run(
+              'INSERT INTO sub_menus (parent_id, name, "order") VALUES (?, ?, ?)',
+              [parentId, name, Number(maxRow?.maxOrder || 0) + 1]
+            );
+            subMenuId = insertRes.lastID;
+          }
+          createdByKey.set(normKey, subMenuId);
+        }
+
+        applied.push({
+          key: item.key || `create:${normKey}`,
+          action: 'create',
+          sub_menu_id: subMenuId,
+          parent_menu_id: parentId,
+          parent_menu_name: menuById.get(parentId).name,
+          name,
+          card_ids: Array.isArray(item.card_ids) ? item.card_ids.map(Number).filter(n => n > 0) : [],
+          card_titles: Array.isArray(item.card_titles) ? item.card_titles : []
+        });
+      }
+
+      await run('COMMIT');
+      res.json({ applied, message: `已批量应用 ${applied.length} 条子菜单建议` });
+    } catch (err) {
+      await run('ROLLBACK').catch(() => {});
+      res.status(500).json({ message: `批量应用子菜单建议失败：${err.message}` });
+    }
+  });
+
   // 应用用户勾选确认的 AI 整理更改（支持变更前自动 WebDAV 备份）
   router.post('/apply', auth, async (req, res) => {
     const updates = Array.isArray(req.body?.updates)
@@ -2668,6 +2865,8 @@ defaultRouter.buildOrganizeMessages = buildOrganizeMessages;
 defaultRouter.buildMenuOrganizeMessages = buildMenuOrganizeMessages;
 defaultRouter.computeOrganizePlan = computeOrganizePlan;
 defaultRouter.computeMenuOrganizePlan = computeMenuOrganizePlan;
+defaultRouter.mergeBatchSuggestions = mergeBatchSuggestions;
+defaultRouter.normalizeSuggestionName = normalizeSuggestionName;
 defaultRouter.computeOrganizeDiff = computeOrganizeDiff;
 defaultRouter.DEFAULT_ORGANIZE_PROMPT = DEFAULT_ORGANIZE_PROMPT;
 
