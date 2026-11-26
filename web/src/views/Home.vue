@@ -1,23 +1,33 @@
 <template>
   <div class="home-container">
-    <!-- 右上角低调半透明后台入口 -->
-    <router-link to="/admin" class="admin-entry-btn" title="进入后台管理" aria-label="进入后台管理">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3" />
-        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-      </svg>
-    </router-link>
+    <!-- 顶部悬浮栏：左上极简站点标识 · 中央毛玻璃主菜单胶囊 · 右上低调齿轮后台入口 -->
+    <header class="top-bar">
+      <button type="button" class="brand-badge" title="返回首页" @click="resetToHome">
+        <svg class="brand-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9" />
+          <polygon points="15.5 8.5 13.5 13.5 8.5 15.5 10.5 10.5 15.5 8.5" />
+        </svg>
+        <span class="brand-text">Nav</span>
+      </button>
 
-    <div class="menu-bar-fixed">
-      <MenuBar
-        :menus="menus"
-        :activeId="activeMenu?.id"
-        :activeSubMenuId="activeSubMenu?.id"
-        @select="selectMenu"
-      />
-    </div>
+      <div class="top-bar-center">
+        <MenuBar
+          :menus="menus"
+          :activeId="activeMenu?.id"
+          @select="selectMainMenu"
+        />
+      </div>
 
-    <div :class="['search-section', { 'dropdown-open': showDropdown }]">
+      <router-link to="/admin" class="admin-entry-btn" title="进入后台管理" aria-label="进入后台管理">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+        </svg>
+      </router-link>
+    </header>
+
+    <!-- 搜索区：全胶囊毛玻璃风格 + 柔和蓝紫聚焦微光 -->
+    <section :class="['search-section', { 'dropdown-open': showDropdown }]">
       <div class="search-box-wrapper" ref="searchWrapperRef">
         <div class="search-engine-select">
           <button
@@ -32,6 +42,11 @@
         </div>
 
         <div class="search-container" :class="{ focused: searchFocused }">
+          <span class="search-leading-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M21 21l-5.2-5.2m1.7-4.8a6.5 6.5 0 11-13 0 6.5 6.5 0 0113 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
           <input
             ref="searchInputRef"
             v-model="searchQuery"
@@ -39,6 +54,7 @@
             :placeholder="selectedEngine.placeholder"
             class="search-input"
             @focus="onSearchFocus"
+            @blur="searchFocused = false"
             @keydown.down.prevent="moveSelection(1)"
             @keydown.up.prevent="moveSelection(-1)"
             @keydown.enter.prevent="handleEnter"
@@ -54,13 +70,13 @@
             / · ⌘K
           </button>
           <button v-if="searchQuery" type="button" class="clear-btn" @click="clearSearch" aria-label="清空" title="清空">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M18 6L6 18M6 6l12 12" />
             </svg>
           </button>
           <button type="button" @click="handleSearch" class="search-btn" title="搜索">
-            <svg width="19" height="19" viewBox="0 0 24 24" fill="none">
-              <path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12h14M13 5l7 7-7 7" />
             </svg>
           </button>
 
@@ -99,33 +115,55 @@
           </div>
         </div>
       </div>
-    </div>
+    </section>
 
+    <!-- 搜索状态栏（全站搜索激活时） -->
     <div v-if="isGlobalSearching" class="search-status-bar">
       <span>全站搜索 “{{ searchQuery.trim() }}”：共找到 <strong>{{ globalMatches.length }}</strong> 张卡片</span>
       <button type="button" class="reset-search-btn" @click="clearSearch">返回当前分类</button>
     </div>
 
-    <CardGrid :cards="displayedCards" :showCategory="isGlobalSearching" />
+    <!-- 横向子菜单胶囊筛选栏（搜索框下方、卡片网格上方，不遮挡搜索框） -->
+    <div v-else-if="subMenuPills.length > 0" class="submenu-pill-bar" role="tablist" aria-label="子菜单筛选">
+      <button
+        v-for="pill in subMenuPills"
+        :key="pill.key"
+        type="button"
+        role="tab"
+        :aria-selected="activeSubKey === pill.key"
+        :class="['submenu-pill', { active: activeSubKey === pill.key }]"
+        @click="selectSubPill(pill.key)"
+      >
+        <span class="submenu-pill-label">{{ pill.label }}</span>
+        <span v-if="pill.count > 0" class="submenu-pill-count">{{ pill.count }}</span>
+      </button>
+    </div>
+
+    <!-- 横向信息卡片网格 -->
+    <main class="cards-main">
+      <CardGrid
+        :cards="displayedCards"
+        :showCategory="isGlobalSearching || activeSubKey === 'all'"
+      />
+    </main>
 
     <footer class="footer">
-      <div class="footer-content">
-        <p class="copyright">Nav-Item</p>
-      </div>
+      <p class="copyright">Nav-Item</p>
     </footer>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import { getMenus, getCards, getFilteredCards } from '../api';
+import { getMenus, getFilteredCards } from '../api';
 import MenuBar from '../components/MenuBar.vue';
 import CardGrid from '../components/CardGrid.vue';
 import CardLogo from '../components/CardLogo.vue';
 
 const menus = ref([]);
 const activeMenu = ref(null);
-const activeSubMenu = ref(null);
+// activeSubKey: 'main'（主菜单直属） | 'all'（当前主菜单下全部） | 数字子菜单 ID
+const activeSubKey = ref('main');
 const cards = ref([]);
 const allCards = ref([]);
 const searchQuery = ref('');
@@ -139,13 +177,13 @@ const searchEngines = [
   {
     name: 'site',
     label: '站内',
-    placeholder: '实时模糊搜全站卡片（按 / 或 ⌘K 聚焦）...',
+    placeholder: '实时搜索全站卡片（按 / 或 ⌘K 聚焦）...',
     url: q => `/search?query=${encodeURIComponent(q)}`
   },
   {
     name: 'google',
     label: 'Google',
-    placeholder: 'Google 搜索（输入时同步筛选站内卡片）...',
+    placeholder: 'Google 搜索，或输入关键词实时筛选站内卡片...',
     url: q => `https://www.google.com/search?q=${encodeURIComponent(q)}`
   },
   {
@@ -167,7 +205,43 @@ const searchEngines = [
     url: q => `https://github.com/search?q=${encodeURIComponent(q)}&type=repositories`
   }
 ];
-const selectedEngine = ref(searchEngines[1]); // 默认 Google，按 / 或 Cmd+K 立即切站内直达
+const selectedEngine = ref(searchEngines[1]);
+
+const subMenuPills = computed(() => {
+  const menu = activeMenu.value;
+  if (!menu || !menu.subMenus || menu.subMenus.length === 0) return [];
+
+  const pills = [];
+  const directCount = Number(menu.direct_card_count || 0);
+  const totalCount = Number(menu.total_card_count || 0);
+
+  if (directCount > 0) {
+    pills.push({ key: 'main', label: '主菜单直属', count: directCount });
+  }
+  for (const sub of menu.subMenus) {
+    pills.push({
+      key: sub.id,
+      label: sub.name,
+      count: Number(sub.card_count || 0)
+    });
+  }
+  if (totalCount > 0 && pills.length > 1) {
+    pills.push({ key: 'all', label: '全部', count: totalCount });
+  }
+  return pills;
+});
+
+function pickDefaultSubKey(menu) {
+  if (!menu) return 'main';
+  const directCount = Number(menu.direct_card_count || 0);
+  const subs = menu.subMenus || [];
+  // 若主菜单直属包含卡片，默认展示直属卡片
+  if (directCount > 0 || subs.length === 0) return 'main';
+  // 若直属卡片为 0，自动选中第一个非空子菜单，避免落地空白页
+  const firstNonEmptySub = subs.find(s => Number(s.card_count || 0) > 0);
+  if (firstNonEmptySub) return firstNonEmptySub.id;
+  return 'all';
+}
 
 function selectEngine(engine) {
   selectedEngine.value = engine;
@@ -327,21 +401,35 @@ function formatHost(url) {
   }
 }
 
-async function selectMenu(menu, parentMenu = null) {
+async function resetToHome() {
   clearSearch();
-  if (parentMenu) {
-    activeMenu.value = parentMenu;
-    activeSubMenu.value = menu;
-  } else {
-    activeMenu.value = menu;
-    activeSubMenu.value = null;
+  if (menus.value.length) {
+    await selectMainMenu(menus.value[0]);
   }
+}
+
+async function selectMainMenu(menu) {
+  clearSearch();
+  activeMenu.value = menu;
+  activeSubKey.value = pickDefaultSubKey(menu);
+  await loadCards();
+}
+
+async function selectSubPill(key) {
+  if (activeSubKey.value === key) return;
+  activeSubKey.value = key;
   await loadCards();
 }
 
 async function loadCards() {
   if (!activeMenu.value) return;
-  const res = await getCards(activeMenu.value.id, activeSubMenu.value?.id);
+  const params = { menuId: activeMenu.value.id };
+  if (activeSubKey.value === 'main') {
+    params.subMenuId = 'main';
+  } else if (activeSubKey.value !== 'all' && activeSubKey.value != null) {
+    params.subMenuId = activeSubKey.value;
+  }
+  const res = await getFilteredCards(params);
   cards.value = res.data || [];
 }
 
@@ -350,15 +438,16 @@ onMounted(async () => {
   document.addEventListener('click', handleDocumentClick);
 
   const [menuRes, allCardsRes] = await Promise.allSettled([getMenus(), getFilteredCards()]);
+  if (allCardsRes.status === 'fulfilled') {
+    allCards.value = allCardsRes.value.data || [];
+  }
   if (menuRes.status === 'fulfilled') {
     menus.value = menuRes.value.data || [];
     if (menus.value.length) {
       activeMenu.value = menus.value[0];
+      activeSubKey.value = pickDefaultSubKey(activeMenu.value);
       await loadCards();
     }
-  }
-  if (allCardsRes.status === 'fulfilled') {
-    allCards.value = allCardsRes.value.data || [];
   }
 });
 
@@ -369,87 +458,192 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.admin-entry-btn {
+.home-container {
+  min-height: 100vh;
+  background-image: url('https://main.ssss.nyc.mn/background.webp');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  padding-top: 96px;
+  box-sizing: border-box;
+}
+
+.home-container::before {
+  content: '';
   position: fixed;
-  top: 14px;
-  right: 18px;
-  z-index: 140;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
+  inset: 0;
+  background: radial-gradient(circle at 50% 0%, rgba(15, 23, 42, 0.24) 0%, rgba(2, 6, 23, 0.56) 100%);
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* 顶部悬浮导航层（左品牌 · 中胶囊 · 右后台入口） */
+.top-bar {
+  position: fixed;
+  top: 16px;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 22px;
+  pointer-events: none;
+}
+
+.top-bar-center {
+  pointer-events: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.brand-badge {
+  position: absolute;
+  left: 22px;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(15, 23, 42, 0.36);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: rgba(241, 245, 249, 0.68);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.brand-badge:hover {
+  color: #ffffff;
+  background: rgba(15, 23, 42, 0.62);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.brand-icon {
+  opacity: 0.85;
+}
+
+.admin-entry-btn {
+  position: absolute;
+  right: 22px;
+  pointer-events: auto;
+  width: 36px;
+  height: 36px;
+  border-radius: 9999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255, 255, 255, 0.58);
-  background: rgba(15, 23, 42, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  color: rgba(241, 245, 249, 0.62);
+  background: rgba(15, 23, 42, 0.36);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   text-decoration: none;
   transition: color 0.2s ease, background-color 0.2s ease, transform 0.28s ease, border-color 0.2s ease;
 }
 
 .admin-entry-btn:hover {
   color: #ffffff;
-  background: rgba(15, 23, 42, 0.68);
-  border-color: rgba(255, 255, 255, 0.34);
+  background: rgba(15, 23, 42, 0.66);
+  border-color: rgba(255, 255, 255, 0.22);
   transform: rotate(35deg);
 }
 
-.menu-bar-fixed {
-  position: fixed;
-  top: 0.6rem;
-  left: 0;
-  width: 100vw;
-  z-index: 100;
+/* 搜索区（充足呼吸感） */
+.search-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2.2rem 16px 2.1rem;
+  position: relative;
+  z-index: 20;
+  box-sizing: border-box;
+}
+
+.search-section.dropdown-open {
+  z-index: 90;
+}
+
+.search-box-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 560px;
 }
 
 .search-engine-select {
   display: flex;
-  flex-direction: row;
   align-items: center;
-  padding-bottom: 0.4rem;
+  justify-content: center;
   gap: 6px;
-  z-index: 2;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
 .engine-btn {
-  border: none;
-  background: none;
-  color: rgba(255, 255, 255, 0.85);
-  font-size: 0.84rem;
-  padding: 3px 10px;
-  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(226, 232, 240, 0.62);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 4px 12px;
+  border-radius: 9999px;
   cursor: pointer;
-  transition: color 0.2s, background-color 0.2s;
+  transition: color 0.18s ease, background-color 0.18s ease, border-color 0.18s ease;
 }
 
-.engine-btn.active,
 .engine-btn:hover {
-  color: #60a5fa;
+  color: rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.engine-btn.active {
+  color: #ffffff;
   background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.14);
 }
 
 .search-container {
   display: flex;
   align-items: center;
-  background: rgba(15, 23, 42, 0.42);
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 22px;
-  padding: 0.28rem 0.35rem 0.28rem 0.85rem;
-  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.2);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  max-width: 520px;
-  width: 92%;
+  width: 100%;
+  height: 48px;
+  padding: 0 6px 0 16px;
+  box-sizing: border-box;
+  border-radius: 9999px;
+  background: rgba(15, 23, 42, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06);
   position: relative;
   transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .search-container.focused {
-  background: rgba(15, 23, 42, 0.64);
-  border-color: rgba(96, 165, 250, 0.68);
-  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.3);
+  background: rgba(15, 23, 42, 0.68);
+  border-color: rgba(165, 180, 252, 0.62);
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.22), 0 14px 36px rgba(0, 0, 0, 0.34);
+}
+
+.search-leading-icon {
+  display: inline-flex;
+  align-items: center;
+  color: rgba(203, 213, 225, 0.62);
+  margin-right: 10px;
+  flex-shrink: 0;
 }
 
 .search-input {
@@ -457,32 +651,33 @@ onBeforeUnmount(() => {
   min-width: 0;
   border: none;
   background: transparent;
-  padding: 0.3rem 0.35rem;
-  font-size: 1rem;
+  padding: 6px 4px;
+  font-size: 15px;
   color: #ffffff;
   outline: none;
 }
 
 .search-input::placeholder {
-  color: rgba(226, 232, 240, 0.65);
-  font-size: 0.92rem;
+  color: rgba(203, 213, 225, 0.52);
+  font-size: 14px;
 }
 
 .shortcut-hint {
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(226, 232, 240, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(203, 213, 225, 0.68);
   font-size: 11px;
-  padding: 2px 7px;
-  border-radius: 6px;
+  padding: 3px 8px;
+  border-radius: 9999px;
   cursor: pointer;
-  margin-right: 4px;
+  margin-right: 6px;
   white-space: nowrap;
-  transition: background-color 0.18s ease, color 0.18s ease;
+  transition: background-color 0.18s ease, color 0.18s ease, border-color 0.18s ease;
 }
 
 .shortcut-hint:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.26);
   color: #ffffff;
 }
 
@@ -491,12 +686,15 @@ onBeforeUnmount(() => {
   border: none;
   outline: none;
   cursor: pointer;
-  color: rgba(255, 255, 255, 0.78);
-  margin-right: 0.15rem;
-  display: flex;
+  color: rgba(226, 232, 240, 0.72);
+  margin-right: 4px;
+  display: inline-flex;
   align-items: center;
-  padding: 4px;
-  border-radius: 50%;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  transition: color 0.15s ease, background-color 0.15s ease;
 }
 
 .clear-btn:hover {
@@ -505,36 +703,37 @@ onBeforeUnmount(() => {
 }
 
 .search-btn {
-  background: transparent;
-  color: #ffffff;
-  border: none;
-  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 9999px;
   width: 36px;
   height: 36px;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  transition: background-color 0.2s ease;
   flex-shrink: 0;
+  transition: background-color 0.18s ease, border-color 0.18s ease;
 }
 
 .search-btn:hover {
-  background: rgba(59, 130, 246, 0.55);
+  background: rgba(129, 140, 248, 0.45);
+  border-color: rgba(165, 180, 252, 0.5);
 }
 
-/* 实时搜索下拉列表 */
+/* 实时站内模糊搜索下拉框 */
 .search-dropdown {
   position: absolute;
-  top: calc(100% + 8px);
+  top: calc(100% + 10px);
   left: 0;
   right: 0;
-  background: rgba(15, 23, 42, 0.94);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 14px;
-  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.45);
+  background: rgba(15, 23, 42, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.48);
   padding: 6px;
   z-index: 120;
   max-height: 380px;
@@ -545,30 +744,26 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 5px 10px 7px;
+  padding: 6px 10px 8px;
   font-size: 11px;
-  color: #94a3b8;
+  color: rgba(148, 163, 184, 0.88);
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   margin-bottom: 4px;
 }
 
-.dropdown-keys {
-  opacity: 0.85;
-}
-
 .dropdown-empty {
-  padding: 14px 12px;
+  padding: 16px 12px;
   text-align: center;
   font-size: 13px;
-  color: #94a3b8;
+  color: rgba(148, 163, 184, 0.9);
 }
 
 .dropdown-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 11px;
   padding: 8px 10px;
-  border-radius: 9px;
+  border-radius: 10px;
   text-decoration: none;
   color: #f8fafc;
   transition: background-color 0.14s ease;
@@ -576,15 +771,15 @@ onBeforeUnmount(() => {
 
 .dropdown-item:hover,
 .dropdown-item.active {
-  background: rgba(59, 130, 246, 0.28);
+  background: rgba(129, 140, 248, 0.24);
 }
 
 .dropdown-logo-wrap {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 8px;
-  background: rgba(226, 232, 240, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -595,7 +790,7 @@ onBeforeUnmount(() => {
   width: 18px;
   height: 18px;
   object-fit: contain;
-  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.3));
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.34));
 }
 
 .dropdown-info {
@@ -625,141 +820,178 @@ onBeforeUnmount(() => {
 
 .dropdown-cat {
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 1px 7px;
   border-radius: 999px;
-  background: rgba(59, 130, 246, 0.24);
-  color: #93c5fd;
+  background: rgba(129, 140, 248, 0.22);
+  color: #c7d2fe;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 .dropdown-sub {
   font-size: 11.5px;
-  color: #94a3b8;
+  color: rgba(148, 163, 184, 0.9);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 横向子菜单胶囊筛选栏（PC 自动居中换行，移动端平滑横滑） */
+.submenu-pill-bar {
+  position: relative;
+  z-index: 5;
+  width: min(92vw, 1240px);
+  margin: 0 auto 22px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+}
+
+@media (min-width: 1480px) {
+  .submenu-pill-bar {
+    width: min(90vw, 1380px);
+  }
+}
+
+.submenu-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 13px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: rgba(226, 232, 240, 0.78);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: color 0.18s ease, background-color 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+}
+
+.submenu-pill:hover {
+  color: #ffffff;
+  background: rgba(30, 41, 59, 0.62);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.submenu-pill.active {
+  color: #ffffff;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.28);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+}
+
+.submenu-pill-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(226, 232, 240, 0.46);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 9999px;
+  line-height: 1.3;
+}
+
+.submenu-pill.active .submenu-pill-count {
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* 搜索状态栏 */
 .search-status-bar {
   position: relative;
-  z-index: 2;
-  max-width: 58rem;
-  width: 94%;
-  margin: 0 auto 12px;
+  z-index: 5;
+  width: min(92vw, 1240px);
+  margin: 0 auto 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 14px;
-  border-radius: 10px;
-  background: rgba(15, 23, 42, 0.45);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: rgba(241, 245, 249, 0.92);
+  padding: 8px 16px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.48);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(241, 245, 249, 0.9);
   font-size: 13px;
   box-sizing: border-box;
 }
 
 .reset-search-btn {
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
   color: #ffffff;
   font-size: 12px;
-  padding: 3px 10px;
-  border-radius: 6px;
+  padding: 4px 11px;
+  border-radius: 9999px;
   cursor: pointer;
+  transition: background-color 0.18s ease;
 }
 
 .reset-search-btn:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.18);
 }
 
-.home-container {
-  min-height: 100vh;
-  background-image: url('https://main.ssss.nyc.mn/background.webp');
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
-  display: flex;
-  flex-direction: column;
+.cards-main {
   position: relative;
-  padding-top: 72px;
-  box-sizing: border-box;
-}
-
-.home-container::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.34);
-  z-index: 1;
-}
-
-.search-section {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  margin-top: 0.75rem;
-  padding: 2.5rem 0 2.1rem;
-  position: relative;
-  z-index: 20;
-}
-
-.search-section.dropdown-open {
-  z-index: 90;
-}
-
-.search-box-wrapper {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 100%;
-  max-width: 520px;
+  z-index: 2;
+  padding-bottom: 1.5rem;
 }
 
 .footer {
   margin-top: auto;
   text-align: center;
-  padding: 1.8rem 0 1.5rem;
+  padding: 2.2rem 0 1.4rem;
   position: relative;
   z-index: 2;
-}
-
-.footer-content {
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
 .copyright {
-  color: rgba(255, 255, 255, 0.56);
-  font-size: 12.5px;
-  letter-spacing: 0.6px;
+  color: rgba(255, 255, 255, 0.28);
+  font-size: 12px;
+  letter-spacing: 0.8px;
   margin: 0;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
-}
-
-:deep(.menu-bar) {
-  position: relative;
-  z-index: 2;
-}
-
-:deep(.card-grid) {
-  position: relative;
-  z-index: 2;
 }
 
 @media (max-width: 768px) {
   .home-container {
-    padding-top: 72px;
+    padding-top: 76px;
+  }
+
+  .top-bar {
+    top: 12px;
+    padding: 0 10px;
+  }
+
+  .brand-badge {
+    left: 10px;
+    padding: 0 9px;
+    height: 34px;
+  }
+
+  .brand-text {
+    display: none;
   }
 
   .admin-entry-btn {
-    top: 10px;
     right: 10px;
-    width: 30px;
-    height: 30px;
+    width: 34px;
+    height: 34px;
+  }
+
+  .search-section {
+    padding: 1.4rem 12px 1.4rem;
+  }
+
+  .search-container {
+    height: 44px;
+    padding: 0 5px 0 14px;
   }
 
   .shortcut-hint,
@@ -767,8 +999,25 @@ onBeforeUnmount(() => {
     display: none;
   }
 
-  .search-section {
-    padding: 1.6rem 0 1.2rem;
+  /* 移动端单行横向平滑滚动 */
+  .submenu-pill-bar {
+    width: 94vw;
+    margin-bottom: 16px;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 4px;
+  }
+
+  .submenu-pill-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .submenu-pill {
+    padding: 5px 11px;
+    font-size: 12.5px;
   }
 }
 </style>
