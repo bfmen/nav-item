@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="sky" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#151b42"/>
+      <stop offset="28%" stop-color="#352d6b"/>
+      <stop offset="56%" stop-color="#7c477f"/>
+      <stop offset="78%" stop-color="#d87074"/>
+      <stop offset="100%" stop-color="#f7b277"/>
+    </linearGradient>
+    <radialGradient id="sunGlow" cx="62%" cy="76%" r="36%">
+      <stop offset="0%" stop-color="#ffe7b3" stop-opacity="0.95"/>
+      <stop offset="30%" stop-color="#f9a46c" stop-opacity="0.55"/>
+      <stop offset="70%" stop-color="#c95b7e" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#352d6b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cloudWarm" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffd1a9" stop-opacity="0.82"/>
+      <stop offset="100%" stop-color="#9e5484" stop-opacity="0.32"/>
+    </linearGradient>
+    <linearGradient id="cloudCool" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#a87cb4" stop-opacity="0.45"/>
+      <stop offset="100%" stop-color="#3a2f66" stop-opacity="0.15"/>
+    </linearGradient>
+    <linearGradient id="hillFar" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#48376c" stop-opacity="0.86"/>
+      <stop offset="100%" stop-color="#221d42"/>
+    </linearGradient>
+    <linearGradient id="campusSil" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1f1b3c"/>
+      <stop offset="100%" stop-color="#0f0e22"/>
+    </linearGradient>
+    <filter id="softBlur" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="8"/>
+    </filter>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#sky)"/>
+  <rect width="1920" height="1080" fill="url(#sunGlow)"/>
+
+  <!-- 暮色初现星点 -->
+  <g fill="#fff7e6" opacity="0.72">
+    <circle cx="210" cy="120" r="2"/>
+    <circle cx="430" cy="86" r="1.6"/>
+    <circle cx="670" cy="148" r="2.2"/>
+    <circle cx="890" cy="95" r="1.5"/>
+    <circle cx="1140" cy="132" r="2"/>
+    <circle cx="1390" cy="88" r="2.3"/>
+    <circle cx="1630" cy="155" r="1.7"/>
+    <circle cx="1775" cy="108" r="2"/>
+    <circle cx="315" cy="215" r="1.4"/>
+    <circle cx="1510" cy="220" r="1.5"/>
+  </g>
+
+  <!-- 高空暮云 -->
+  <g fill="url(#cloudCool)" filter="url(#softBlur)">
+    <ellipse cx="420" cy="360" rx="290" ry="44"/>
+    <ellipse cx="1460" cy="310" rx="340" ry="50"/>
+    <ellipse cx="960" cy="430" rx="410" ry="38"/>
+  </g>
+
+  <!-- 霞光流云 -->
+  <g fill="url(#cloudWarm)">
+    <path d="M120 560 Q210 505 315 532 Q390 485 495 524 Q585 510 645 562 Z" opacity="0.72"/>
+    <path d="M1040 535 Q1165 462 1295 500 Q1405 445 1540 496 Q1655 478 1765 542 Z" opacity="0.8"/>
+    <path d="M580 650 Q710 612 855 636 Q980 605 1125 654 Z" opacity="0.65"/>
+  </g>
+
+  <!-- 夕阳 -->
+  <circle cx="1190" cy="810" r="76" fill="#fff2cc" opacity="0.88"/>
+  <circle cx="1190" cy="810" r="118" fill="#ffc98a" opacity="0.28"/>
+
+  <!-- 远山剪影 -->
+  <path d="M0 820 Q240 735 520 795 T1080 785 T1600 752 L1920 795 L1920 1080 L0 1080 Z" fill="url(#hillFar)"/>
+
+  <!-- 校园教学楼与钟楼剪影 -->
+  <g fill="url(#campusSil)">
+    <!-- 左侧树影 -->
+    <path d="M0 910 Q75 830 165 875 Q235 820 315 895 L315 1080 L0 1080 Z"/>
+    <!-- 主教学楼 -->
+    <rect x="260" y="790" width="540" height="290" rx="3"/>
+    <rect x="248" y="778" width="564" height="16" rx="2"/>
+    <!-- 屋顶水箱与护栏 -->
+    <rect x="310" y="748" width="70" height="32" rx="2"/>
+    <rect x="705" y="720" width="66" height="60" rx="2"/>
+    <!-- 钟楼 -->
+    <rect x="716" y="655" width="44" height="72" rx="2"/>
+    <polygon points="710,656 738,620 766,656"/>
+    <!-- 右侧体育馆与树林 -->
+    <path d="M1330 855 Q1500 785 1675 850 L1675 1080 L1330 1080 Z"/>
+    <path d="M1580 895 Q1690 818 1795 865 Q1865 830 1920 875 L1920 1080 L1580 1080 Z"/>
+    <!-- 前景坡地 -->
+    <path d="M0 955 Q460 915 960 950 T1920 932 L1920 1080 L0 1080 Z"/>
+  </g>
+
+  <!-- 暖黄教室灯光 -->
+  <g fill="#ffd894" opacity="0.78">
+    <rect x="295" y="825" width="38" height="22" rx="2"/>
+    <rect x="352" y="825" width="38" height="22" rx="2"/>
+    <rect x="466" y="825" width="38" height="22" rx="2"/>
+    <rect x="523" y="825" width="38" height="22" rx="2"/>
+    <rect x="637" y="825" width="38" height="22" rx="2"/>
+    <rect x="352" y="874" width="38" height="22" rx="2" opacity="0.58"/>
+    <rect x="409" y="874" width="38" height="22" rx="2"/>
+    <rect x="580" y="874" width="38" height="22" rx="2"/>
+    <rect x="637" y="874" width="38" height="22" rx="2" opacity="0.52"/>
+    <circle cx="738" cy="686" r="10" fill="#ffe8b8" opacity="0.88"/>
+  </g>
+
+  <!-- 日系电线杆与暮色电线 -->
+  <g stroke="#171430" stroke-linecap="round" fill="none">
+    <line x1="126" y1="620" x2="126" y2="1080" stroke-width="7"/>
+    <line x1="94" y1="654" x2="158" y2="654" stroke-width="4.5"/>
+    <line x1="100" y1="686" x2="152" y2="686" stroke-width="4"/>
+    <line x1="1810" y1="640" x2="1810" y2="1080" stroke-width="6.5"/>
+    <line x1="1782" y1="674" x2="1838" y2="674" stroke-width="4"/>
+    <path d="M0 640 Q560 725 1810 674" stroke-width="1.6" opacity="0.72"/>
+    <path d="M0 676 Q640 765 1810 698" stroke-width="1.3" opacity="0.56"/>
+    <path d="M126 654 Q960 785 1920 715" stroke-width="1.2" opacity="0.48"/>
+  </g>
+</svg>

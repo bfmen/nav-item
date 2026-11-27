@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="mistSky" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0b1d2a"/>
+      <stop offset="48%" stop-color="#17384a"/>
+      <stop offset="82%" stop-color="#2d5f72"/>
+      <stop offset="100%" stop-color="#4b8394"/>
+    </linearGradient>
+    <radialGradient id="moonHalo" cx="72%" cy="26%" r="30%">
+      <stop offset="0%" stop-color="#e0f2fe" stop-opacity="0.88"/>
+      <stop offset="22%" stop-color="#bae6fd" stop-opacity="0.34"/>
+      <stop offset="60%" stop-color="#38bdf8" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#0b1d2a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ridge1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2c5d6e" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#193b4b"/>
+    </linearGradient>
+    <linearGradient id="ridge2" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1d4454"/>
+      <stop offset="100%" stop-color="#0f2834"/>
+    </linearGradient>
+    <linearGradient id="ridge3" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#122d3a"/>
+      <stop offset="100%" stop-color="#08161f"/>
+    </linearGradient>
+    <linearGradient id="mistBand" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#cbd5e1" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#bae6fd" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#0b1d2a" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1920" height="1080" fill="url(#mistSky)"/>
+  <rect width="1920" height="1080" fill="url(#moonHalo)"/>
+
+  <!-- 清月 -->
+  <circle cx="1382" cy="280" r="56" fill="#f0f9ff" opacity="0.92"/>
+  <circle cx="1382" cy="280" r="82" fill="#bae6fd" opacity="0.18"/>
+
+  <!-- 远山青岚 -->
+  <path d="M0 640 Q260 520 560 605 T1180 570 T1740 535 L1920 575 L1920 1080 L0 1080 Z" fill="url(#ridge1)"/>
+  <rect x="0" y="590" width="1920" height="140" fill="url(#mistBand)"/>
+
+  <!-- 中景山脊 -->
+  <path d="M0 745 Q310 620 680 715 T1360 675 T1920 710 L1920 1080 L0 1080 Z" fill="url(#ridge2)"/>
+  <rect x="0" y="700" width="1920" height="150" fill="url(#mistBand)"/>
+
+  <!-- 近景松林剪影 -->
+  <path d="M0 845 Q360 760 780 840 T1520 805 T1920 845 L1920 1080 L0 1080 Z" fill="url(#ridge3)"/>
+  <g fill="#06121a">
+    <path d="M0 950 Q480 890 980 948 T1920 915 L1920 1080 L0 1080 Z"/>
+    <polygon points="120,930 148,840 176,930"/>
+    <polygon points="170,945 204,820 238,945"/>
+    <polygon points="232,955 258,865 284,955"/>
+    <polygon points="1640,940 1672,832 1704,940"/>
+    <polygon points="1705,948 1744,812 1783,948"/>
+    <polygon points="1782,952 1812,860 1842,952"/>
+  </g>
+</svg>

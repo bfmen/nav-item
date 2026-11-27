@@ -30,7 +30,15 @@ app.get('/uploads/default-favicon.png', (req, res) => {
   if (!filename) return res.sendStatus(404);
   return res.sendFile(filename);
 });
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', (req, res, next) => {
+  if (/\.svg$/i.test(req.path)) {
+    res.setHeader('Content-Security-Policy', 'sandbox');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+  }
+  next();
+}, express.static(path.join(__dirname, 'uploads')));
+app.use('/backgrounds', express.static(path.join(__dirname, 'web/dist/backgrounds')));
+app.use('/backgrounds', express.static(path.join(__dirname, 'web/public/backgrounds')));
 app.use(express.static(path.join(__dirname, 'web/dist')));
 
 app.use((req, res, next) => {
@@ -38,6 +46,7 @@ app.use((req, res, next) => {
     req.method === 'GET' &&
     !req.path.startsWith('/api') &&
     !req.path.startsWith('/uploads') &&
+    !req.path.startsWith('/backgrounds') &&
     !fs.existsSync(path.join(__dirname, 'web/dist', req.path))
   ) {
     res.sendFile(path.join(__dirname, 'web/dist', 'index.html'));

@@ -85,6 +85,7 @@ export const getWebdavConfig = () => axios.get(`${BASE}/backup/webdav/config`);
 export const saveWebdavConfig = (data) => axios.put(`${BASE}/backup/webdav/config`, data);
 
 // 站点外观与首页背景设置 API
+export const getSiteBgPresets = () => axios.get(`${BASE}/settings/presets`);
 export const getSiteAppearance = () => axios.get(`${BASE}/settings/appearance`);
 export const updateSiteAppearance = (data) => axios.put(`${BASE}/settings/appearance`, data);
 export const uploadSiteBackground = (file, overlay = undefined) => {

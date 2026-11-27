@@ -3,7 +3,7 @@ const http = require('http');
 const https = require('https');
 const authMiddleware = require('./authMiddleware');
 const db = require('../db');
-const { DEFAULT_BG_OVERLAY, validateBgUrl, validateBgOverlay } = require('./settings');
+const { DEFAULT_BG_OVERLAY, resolvePresetId, validateBgUrl, validateBgOverlay } = require('./settings');
 
 const router = express.Router();
 const SCHEMA_VERSION = 2;
@@ -78,9 +78,11 @@ async function createBackup() {
       safeBgOverlay = DEFAULT_BG_OVERLAY;
     }
   }
+  const safeBgPreset = resolvePresetId(safeBgUrl, siteSettingsMap.get('site_bg_preset') || '');
   const siteSettings = {
     site_bg_url: safeBgUrl,
-    site_bg_overlay: safeBgOverlay
+    site_bg_overlay: safeBgOverlay,
+    site_bg_preset: safeBgPreset
   };
   const normalizedSiteSettings = siteSettingRows.map(row => ({
     key: String(row.key),
@@ -92,6 +94,9 @@ async function createBackup() {
   }
   if (!siteSettingsMap.has('site_bg_overlay')) {
     normalizedSiteSettings.push({ key: 'site_bg_overlay', value: String(safeBgOverlay), updated_at: null });
+  }
+  if (!siteSettingsMap.has('site_bg_preset')) {
+    normalizedSiteSettings.push({ key: 'site_bg_preset', value: safeBgPreset, updated_at: null });
   }
 
   const normalizedMenus = menus.map(m => ({
@@ -285,6 +290,9 @@ async function restoreBackup(backup) {
           if (backup.siteSettings.site_bg_overlay !== undefined) {
             mergedSettings.set('site_bg_overlay', String(backup.siteSettings.site_bg_overlay ?? DEFAULT_BG_OVERLAY));
           }
+          if (backup.siteSettings.site_bg_preset !== undefined) {
+            mergedSettings.set('site_bg_preset', String(backup.siteSettings.site_bg_preset ?? ''));
+          }
         }
         if (mergedSettings.has('site_bg_url')) {
           try {
@@ -300,6 +308,9 @@ async function restoreBackup(backup) {
             mergedSettings.set('site_bg_overlay', String(DEFAULT_BG_OVERLAY));
           }
         }
+        const restoredBgUrl = mergedSettings.get('site_bg_url') || '';
+        const restoredPreset = resolvePresetId(restoredBgUrl, mergedSettings.get('site_bg_preset') || '');
+        mergedSettings.set('site_bg_preset', restoredPreset);
         for (const [key, value] of mergedSettings.entries()) {
           await run(
             `INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))

@@ -81,7 +81,7 @@
                 {{ bgUploading ? '上传中…' : '上传本地图片' }}
                 <input
                   type="file"
-                  accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif"
+                  accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml,.jpg,.jpeg,.png,.webp,.gif,.svg"
                   :disabled="bgUploading || bgSaving"
                   @change="handleUploadBackground"
                 />
@@ -103,7 +103,35 @@
                 恢复默认
               </button>
             </div>
-            <p class="hint">本地上传支持 JPG / PNG / WebP / GIF 格式，单张不超过 10MB，上传后自动填入并立即生效。</p>
+            <p class="hint">本地上传支持 JPG / PNG / WebP / GIF / SVG（自动安全过滤）格式，单张不超过 10MB，上传后自动填入并立即生效。</p>
+          </div>
+        </div>
+
+        <div v-if="bgPresets.length" class="preset-section">
+          <div class="preset-header">
+            <span class="preset-title">内置精选背景预设</span>
+            <small>点击预设自动填入地址与推荐遮罩暗度，点击“保存背景设置”即可应用到首页</small>
+          </div>
+          <div class="preset-grid" role="list" aria-label="内置背景预设">
+            <button
+              v-for="preset in bgPresets"
+              :key="preset.id"
+              type="button"
+              role="listitem"
+              :class="['preset-card', { active: activePresetId === preset.id }]"
+              :title="preset.desc"
+              @click="selectBgPreset(preset)"
+            >
+              <div class="preset-thumb" :style="{ backgroundImage: `url(${preset.preview_url || '/background.webp'})` }">
+                <span class="preset-thumb-overlay" :style="{ background: buildOverlayCss(preset.overlay) }"></span>
+                <span class="preset-tag">{{ preset.tag }}</span>
+                <span v-if="activePresetId === preset.id" class="preset-check" aria-label="当前选中">✓</span>
+              </div>
+              <div class="preset-meta">
+                <span class="preset-name">{{ preset.name }}</span>
+                <span class="preset-overlay-hint">推荐遮罩 {{ preset.overlay }}%</span>
+              </div>
+            </button>
           </div>
         </div>
       </article>
@@ -160,6 +188,7 @@ import {
   changePassword,
   exportBackup,
   getSiteAppearance,
+  getSiteBgPresets,
   getWebdavConfig,
   listWebdavBackups,
   logout,
@@ -172,6 +201,14 @@ import {
 
 const DEFAULT_OVERLAY = 40;
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+const FALLBACK_PRESETS = [
+  { id: 'default', name: '默认深空山脉', desc: '经典静谧星空壁纸，开箱即用', tag: '默认', type: 'default', url: '', preview_url: '/background.webp', overlay: 40 },
+  { id: 'twilight-campus', name: '青春暮色校园', desc: '日落紫霞、晚风流云与校园剪影', tag: '矢量', type: 'svg', url: '/backgrounds/twilight-campus.svg', preview_url: '/backgrounds/twilight-campus.svg', overlay: 28 },
+  { id: 'deep-blue-geo', name: '极简深蓝几何', desc: '沉静深蓝几何光面，百搭暗色毛玻璃', tag: '矢量', type: 'svg', url: '/backgrounds/deep-blue-geo.svg', preview_url: '/backgrounds/deep-blue-geo.svg', overlay: 20 },
+  { id: 'aurora-peaks', name: '极光雪峰夜景', desc: '翠紫极光映照雪山轮廓与繁星', tag: '矢量', type: 'svg', url: '/backgrounds/aurora-peaks.svg', preview_url: '/backgrounds/aurora-peaks.svg', overlay: 24 },
+  { id: 'misty-forest', name: '青岚月影山林', desc: '层叠青墨远山与柔和清月微光', tag: '矢量', type: 'svg', url: '/backgrounds/misty-forest.svg', preview_url: '/backgrounds/misty-forest.svg', overlay: 30 },
+  { id: 'dawn-horizon', name: '微光晨曦云海', desc: '柔和蓝粉渐变天际线与轻盈云海', tag: '矢量', type: 'svg', url: '/backgrounds/dawn-horizon.svg', preview_url: '/backgrounds/dawn-horizon.svg', overlay: 36 }
+];
 
 const oldPassword = ref('');
 const newPassword = ref('');
@@ -188,48 +225,82 @@ const messageType = ref('success');
 const webdav = ref({ url: '', username: '', password: '' });
 
 // 首页背景设置状态
+const bgPresets = ref(FALLBACK_PRESETS);
 const bgUrl = ref('');
 const bgOverlay = ref(DEFAULT_OVERLAY);
+const bgPreset = ref('default');
 const bgSaving = ref(false);
 const bgUploading = ref(false);
 const previewError = ref(false);
 
 const trimmedBgUrl = computed(() => String(bgUrl.value || '').trim());
 
-const previewOverlayBg = computed(() => {
-  const num = Number(bgOverlay.value);
+const activePresetObj = computed(() => {
+  const url = trimmedBgUrl.value;
+  return bgPresets.value.find(item => item.url === url) || null;
+});
+
+const activePresetId = computed(() => activePresetObj.value?.id || '');
+
+function buildOverlayCss(percent) {
+  const num = Number(percent);
   const clamped = Number.isFinite(num) ? Math.min(80, Math.max(0, num)) : DEFAULT_OVERLAY;
   const alpha = clamped / 100;
   if (alpha <= 0) return 'rgba(2, 6, 23, 0)';
   const top = (alpha * 0.82).toFixed(3);
   const bottom = Math.min(0.92, alpha * 1.12).toFixed(3);
   return `radial-gradient(circle at 50% 0%, rgba(15, 23, 42, ${top}) 0%, rgba(2, 6, 23, ${bottom}) 100%)`;
-});
+}
+
+const previewOverlayBg = computed(() => buildOverlayCss(bgOverlay.value));
 
 const previewStatusText = computed(() => {
-  if (!trimmedBgUrl.value) return '默认星空背景';
+  if (!trimmedBgUrl.value) return '默认深空山脉';
   if (previewError.value) return '图片加载失败 · 将回退默认星空';
+  if (activePresetObj.value) return `内置预设 · ${activePresetObj.value.name}`;
   if (trimmedBgUrl.value.startsWith('/uploads/')) return '本地已上传壁纸';
   return '网络背景图片';
 });
 
-watch(trimmedBgUrl, () => {
+watch(trimmedBgUrl, (nextUrl) => {
   previewError.value = false;
+  const matched = bgPresets.value.find(item => item.url === nextUrl);
+  bgPreset.value = matched ? matched.id : '';
 });
+
+function selectBgPreset(preset) {
+  bgUrl.value = preset.url || '';
+  bgOverlay.value = Number(preset.overlay ?? DEFAULT_OVERLAY);
+  bgPreset.value = preset.id || '';
+  previewError.value = false;
+  notify(`已填入预设「${preset.name}」（推荐遮罩 ${bgOverlay.value}%），点击“保存背景设置”即可生效`);
+}
 
 async function loadAppearance() {
   try {
     const { data } = await getSiteAppearance();
     bgUrl.value = data?.site_bg_url || '';
     bgOverlay.value = data?.site_bg_overlay !== undefined ? Number(data.site_bg_overlay) : DEFAULT_OVERLAY;
+    bgPreset.value = data?.site_bg_preset || (bgUrl.value ? '' : 'default');
     previewError.value = false;
   } catch (error) {
     notify(error.response?.data?.message || '读取首页背景配置失败', 'error');
   }
 }
 
+async function loadBgPresets() {
+  try {
+    const { data } = await getSiteBgPresets();
+    if (Array.isArray(data?.data) && data.data.length > 0) {
+      bgPresets.value = data.data;
+    }
+  } catch {
+    // 预设读取失败时平滑沿用内置兜底列表
+  }
+}
+
 onMounted(async () => {
-  const [webdavRes] = await Promise.allSettled([getWebdavConfig(), loadAppearance()]);
+  const [webdavRes] = await Promise.allSettled([getWebdavConfig(), loadBgPresets(), loadAppearance()]);
   if (webdavRes.status === 'fulfilled') {
     const data = webdavRes.value.data;
     webdav.value = { url: data.data?.url || '', username: data.data?.username || '', password: data.data?.password || '' };
@@ -248,17 +319,24 @@ function notify(text, type = 'success') {
 
 async function handleSaveAppearance() {
   const cleanUrl = trimmedBgUrl.value;
-  if (cleanUrl && !cleanUrl.startsWith('/uploads/') && !/^https?:\/\//i.test(cleanUrl)) {
+  if (
+    cleanUrl &&
+    !cleanUrl.startsWith('/uploads/') &&
+    !cleanUrl.startsWith('/backgrounds/') &&
+    !/^https?:\/\//i.test(cleanUrl)
+  ) {
     return notify('请输入有效的 http:// 或 https:// 图片链接', 'error');
   }
   bgSaving.value = true;
   try {
     const { data } = await updateSiteAppearance({
       site_bg_url: cleanUrl,
-      site_bg_overlay: bgOverlay.value
+      site_bg_overlay: bgOverlay.value,
+      site_bg_preset: activePresetId.value
     });
     bgUrl.value = data.site_bg_url || '';
     bgOverlay.value = Number(data.site_bg_overlay ?? DEFAULT_OVERLAY);
+    bgPreset.value = data.site_bg_preset || '';
     notify(data.message || '背景设置已保存');
   } catch (error) {
     notify(error.response?.data?.message || '保存背景设置失败', 'error');
@@ -272,10 +350,12 @@ async function handleResetAppearance() {
   try {
     const { data } = await updateSiteAppearance({
       site_bg_url: '',
-      site_bg_overlay: DEFAULT_OVERLAY
+      site_bg_overlay: DEFAULT_OVERLAY,
+      site_bg_preset: 'default'
     });
     bgUrl.value = data.site_bg_url || '';
     bgOverlay.value = Number(data.site_bg_overlay ?? DEFAULT_OVERLAY);
+    bgPreset.value = data.site_bg_preset || 'default';
     previewError.value = false;
     notify('已恢复默认星空背景');
   } catch (error) {
@@ -299,6 +379,7 @@ async function handleUploadBackground(event) {
     if (data.site_bg_overlay !== undefined) {
       bgOverlay.value = Number(data.site_bg_overlay);
     }
+    bgPreset.value = data.site_bg_preset || '';
     previewError.value = false;
     notify(data.message || '背景图片上传成功并已生效');
   } catch (error) {
@@ -607,6 +688,134 @@ h2 { margin-bottom: 8px; font-size: 28px; }
   gap: 10px;
 }
 
+/* 内置背景预设快捷选择区 */
+.preset-section {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid #edf0f6;
+  display: grid;
+  gap: 14px;
+}
+
+.preset-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.preset-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #33425d;
+}
+
+.preset-header small {
+  color: #8190a9;
+  font-size: 12.5px;
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.preset-card {
+  display: grid;
+  gap: 7px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1.5px solid #e7ecf5;
+  background: #fbfcff;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease, background-color 0.18s ease;
+}
+
+.preset-card:hover {
+  border-color: #9bb7ff;
+  background: #f5f8ff;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(79, 124, 255, 0.12);
+}
+
+.preset-card.active {
+  border-color: #4f7cff;
+  background: #eef3ff;
+  box-shadow: 0 0 0 3px rgba(79, 124, 255, 0.16);
+}
+
+.preset-thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: #0b1224;
+  background-size: cover;
+  background-position: center;
+}
+
+.preset-thumb-overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.preset-tag {
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  z-index: 2;
+  font-size: 10px;
+  font-weight: 600;
+  color: #f8fafc;
+  background: rgba(15, 23, 42, 0.66);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+.preset-check {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  z-index: 2;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #4f7cff;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.32);
+}
+
+.preset-meta {
+  display: grid;
+  gap: 2px;
+  padding: 0 2px 2px;
+}
+
+.preset-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1f2b44;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-overlay-hint {
+  font-size: 11px;
+  color: #7c8ba4;
+  font-weight: 500;
+}
+
 .form, .webdav-box { display: grid; gap: 14px; }
 label { display: grid; gap: 7px; color: #52617a; font-size: 13px; font-weight: 600; }
 input:not([type='range']) { width: 100%; box-sizing: border-box; border: 1px solid #dce3ef; border-radius: 10px; padding: 11px 12px; color: #172033; background: #fbfcff; font-size: 14px; }
@@ -632,6 +841,10 @@ select { width: 100%; box-sizing: border-box; border: 1px solid #dce3ef; border-
 .notice.success { color: #176b4c; background: #e8f8f0; }
 .notice.error { color: #a33b49; background: #fff0f1; }
 
+@media (max-width: 1240px) {
+  .preset-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 @media (max-width: 960px) {
   .appearance-layout { grid-template-columns: 1fr; gap: 18px; }
 }
@@ -639,6 +852,10 @@ select { width: 100%; box-sizing: border-box; border: 1px solid #dce3ef; border-
 @media (max-width: 820px) {
   .settings-grid { grid-template-columns: 1fr; }
   .settings-page { padding-top: 0; }
+}
+
+@media (max-width: 560px) {
+  .preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 }
 
 @media (max-width: 480px) {

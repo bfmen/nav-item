@@ -61,7 +61,7 @@ const SAMPLE_WEBP = Buffer.concat([
 ]);
 const SAMPLE_GIF = Buffer.from('GIF89a\x01\x00\x01\x00\x80\x00\x00', 'binary');
 
-test('背景配置公开读取、鉴权更新、参数校验与本地上传校验', async () => {
+test('背景配置公开读取、内置预设读取保存、鉴权更新与本地图片上传校验', async () => {
   const db = await initMemoryDb();
   const tempUploadsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nav-item-bg-test-'));
   let server;
@@ -76,22 +76,38 @@ test('背景配置公开读取、鉴权更新、参数校验与本地上传校�
     app.use(express.json());
     app.use('/api/settings', settingsModule.createSettingsRouter({
       uploadsDir: tempUploadsDir,
-      maxFileSize: 1024 // 1KB 用于测试超大文件拦截
+      maxFileSize: 2048 // 2KB 用于测试超大文件拦截
     }));
 
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
 
-    // 1. 公开读取默认外观配置（无需登录）
+    // 1. 公开读取内置精选背景预设列表（无需登录）并校验静态 SVG 文件存在
+    const presetsRes = await fetch(`${base}/api/settings/presets`);
+    assert.equal(presetsRes.status, 200);
+    const presetsBody = await presetsRes.json();
+    assert.ok(Array.isArray(presetsBody.data));
+    assert.ok(presetsBody.data.length >= 4);
+    assert.ok(presetsBody.data.some(p => p.id === 'default'));
+    assert.ok(presetsBody.data.some(p => p.id === 'twilight-campus' && p.url === '/backgrounds/twilight-campus.svg'));
+    for (const preset of presetsBody.data) {
+      if (preset.url && preset.url.startsWith('/backgrounds/')) {
+        const assetPath = path.resolve(__dirname, '../web/public', preset.url.slice(1));
+        assert.ok(fs.existsSync(assetPath), `内置预设静态文件缺失: ${preset.url}`);
+      }
+    }
+
+    // 2. 公开读取默认外观配置（无需登录）
     const initRes = await fetch(`${base}/api/settings/appearance`);
     assert.equal(initRes.status, 200);
     assert.deepEqual(await initRes.json(), {
       site_bg_url: '',
-      site_bg_overlay: 40
+      site_bg_overlay: 40,
+      site_bg_preset: 'default'
     });
 
-    // 2. 未登录禁止修改或上传
+    // 3. 未登录禁止修改或上传
     const unauthUpdate = await fetch(`${base}/api/settings/appearance`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -102,7 +118,27 @@ test('背景配置公开读取、鉴权更新、参数校验与本地上传校�
     const unauthUpload = await fetch(`${base}/api/settings/background/upload`, { method: 'POST' });
     assert.equal(unauthUpload.status, 401);
 
-    // 3. 合法网络图片 URL + 遮罩暗度更新
+    // 4. 通过内置预设 ID 保存：自动填入预设路径与推荐遮罩
+    const presetSaveRes = await fetch(`${base}/api/settings/appearance`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: authCookie },
+      body: JSON.stringify({ site_bg_preset: 'twilight-campus' })
+    });
+    assert.equal(presetSaveRes.status, 200);
+    const presetSaved = await presetSaveRes.json();
+    assert.equal(presetSaved.site_bg_url, '/backgrounds/twilight-campus.svg');
+    assert.equal(presetSaved.site_bg_overlay, 28);
+    assert.equal(presetSaved.site_bg_preset, 'twilight-campus');
+
+    // 非法预设 ID 返回 400
+    const badPresetRes = await fetch(`${base}/api/settings/appearance`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: authCookie },
+      body: JSON.stringify({ site_bg_preset: 'non-existent-preset' })
+    });
+    assert.equal(badPresetRes.status, 400);
+
+    // 5. 合法网络图片 URL + 遮罩暗度更新（预设标识自动清空）
     const putOk = await fetch(`${base}/api/settings/appearance`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Cookie: authCookie },
@@ -115,15 +151,23 @@ test('背景配置公开读取、鉴权更新、参数校验与本地上传校�
     const putOkBody = await putOk.json();
     assert.equal(putOkBody.site_bg_url, 'https://cdn.example.com/wallpapers/aurora.webp');
     assert.equal(putOkBody.site_bg_overlay, 55);
+    assert.equal(putOkBody.site_bg_preset, '');
 
     const afterPut = await (await fetch(`${base}/api/settings/appearance`)).json();
     assert.deepEqual(afterPut, {
       site_bg_url: 'https://cdn.example.com/wallpapers/aurora.webp',
-      site_bg_overlay: 55
+      site_bg_overlay: 55,
+      site_bg_preset: ''
     });
 
-    // 4. 非法 URL、路径穿越与非法遮罩拦截
-    for (const badUrl of ['javascript:alert(1)', 'ftp://example.com/a.jpg', '/uploads/../secret.png', 'not-a-url']) {
+    // 6. 非法 URL、路径穿越与非法遮罩拦截
+    for (const badUrl of [
+      'javascript:alert(1)',
+      'ftp://example.com/a.jpg',
+      '/uploads/../secret.png',
+      '/backgrounds/../secret.svg',
+      'not-a-url'
+    ]) {
       const badRes = await fetch(`${base}/api/settings/appearance`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', Cookie: authCookie },
@@ -147,7 +191,7 @@ test('背景配置公开读取、鉴权更新、参数校验与本地上传校�
     })).json();
     assert.equal(clampedRes.site_bg_overlay, 80);
 
-    // 5. 本地图片上传：支持 PNG / JPG / WebP / GIF，自动保存至 uploads 并生效
+    // 7. 本地图片上传：支持 PNG / JPG / WebP / GIF，自动保存至 uploads 并生效
     const uploadHelper = async (buffer, filename, mimeType, overlay) => {
       const form = new FormData();
       form.append('background', new Blob([buffer], { type: mimeType }), filename);
@@ -172,35 +216,75 @@ test('背景配置公开读取、鉴权更新、参数校验与本地上传校�
       assert.ok(upData.url.endsWith(expectedExt));
       assert.equal(upData.site_bg_url, upData.url);
       assert.equal(upData.site_bg_overlay, 25);
+      assert.equal(upData.site_bg_preset, '');
       const savedPath = path.join(tempUploadsDir, upData.filename);
       assert.ok(fs.existsSync(savedPath));
       assert.deepEqual(fs.readFileSync(savedPath), buf);
     }
 
-    // 6. 伪造扩展名（HTML 改名 .png）和 SVG 必须被魔数校验拦截且不落盘
+    // 8. SVG 上传 + 安全清洗（移除 script / foreignObject / on* 事件 / javascript: / DOCTYPE ENTITY）
+    const dirtySvg = `<?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE svg [<!ENTITY xxe "evil">]>
+      <svg viewBox="0 0 800 450" onload="alert(1)" onclick='evil()'>
+        <script>window.alert("xss")</script>
+        <scr<script>ipt>alert(2)</scr</script>ipt>
+        <foreignObject width="100" height="100"><body><iframe src="https://evil.test"></iframe></body></foreignObject>
+        <style>@import url("https://evil.test/x.css"); rect { fill: #1e293b; }</style>
+        <rect width="800" height="450" fill="#0f172a" onmouseover="steal()" />
+        <a xlink:href="javascript:alert(3)" href="&#106;avascript:alert(4)">
+          <circle cx="400" cy="225" r="80" fill="#38bdf8" onerror="boom()" />
+        </a>
+        <use href="https://evil.test/external.svg#bad" />
+        <use href="#safe-grad" />
+      </svg>`;
+    const svgUpRes = await uploadHelper(Buffer.from(dirtySvg, 'utf8'), 'campus.svg', 'image/svg+xml', 32);
+    assert.equal(svgUpRes.status, 200);
+    const svgUpData = await svgUpRes.json();
+    assert.ok(svgUpData.url.startsWith('/uploads/bg-'));
+    assert.ok(svgUpData.url.endsWith('.svg'));
+    assert.equal(svgUpData.site_bg_url, svgUpData.url);
+    assert.equal(svgUpData.site_bg_overlay, 32);
+    assert.equal(svgUpData.site_bg_preset, '');
+
+    const savedSvgText = fs.readFileSync(path.join(tempUploadsDir, svgUpData.filename), 'utf8');
+    assert.match(savedSvgText, /xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+    assert.match(savedSvgText, /<rect\b[^>]*fill="#0f172a"/);
+    assert.match(savedSvgText, /<circle\b[^>]*fill="#38bdf8"/);
+    assert.match(savedSvgText, /<use\b[^>]*href="#safe-grad"/);
+    assert.doesNotMatch(savedSvgText, /<script/i);
+    assert.doesNotMatch(savedSvgText, /<foreignObject/i);
+    assert.doesNotMatch(savedSvgText, /<iframe/i);
+    assert.doesNotMatch(savedSvgText, /\bon(?:load|click|error|mouseover)\s*=/i);
+    assert.doesNotMatch(savedSvgText, /javascript:/i);
+    assert.doesNotMatch(savedSvgText, /<!DOCTYPE|<!ENTITY/i);
+    assert.doesNotMatch(savedSvgText, /@import/i);
+    assert.doesNotMatch(savedSvgText, /evil\.test\/external\.svg/i);
+
+    // 9. 伪造扩展名（HTML 改名 .png 或 .svg）必须被拦截且不落盘
     const filesBeforeInvalid = fs.readdirSync(tempUploadsDir).length;
     const fakePngRes = await uploadHelper(Buffer.from('<html><script>alert(1)</script></html>'), 'fake.png', 'image/png');
     assert.equal(fakePngRes.status, 400);
-    const svgRes = await uploadHelper(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"></svg>'), 'vec.svg', 'image/svg+xml');
-    assert.equal(svgRes.status, 400);
+    const fakeSvgRes = await uploadHelper(Buffer.from('<html><body><svg></svg></body></html>'), 'fake.svg', 'image/svg+xml');
+    assert.equal(fakeSvgRes.status, 400);
     assert.equal(fs.readdirSync(tempUploadsDir).length, filesBeforeInvalid);
 
-    // 7. 超过大小限制的文件被拒绝
-    const bigPng = Buffer.concat([SAMPLE_PNG, Buffer.alloc(2048, 0x00)]);
+    // 10. 超过大小限制的文件被拒绝
+    const bigPng = Buffer.concat([SAMPLE_PNG, Buffer.alloc(3072, 0x00)]);
     const bigRes = await uploadHelper(bigPng, 'huge.png', 'image/png');
     assert.equal(bigRes.status, 400);
     assert.match((await bigRes.json()).message, /不能超过/);
 
-    // 8. 一键恢复默认背景
+    // 11. 一键恢复默认背景
     const resetRes = await fetch(`${base}/api/settings/appearance`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Cookie: authCookie },
-      body: JSON.stringify({ site_bg_url: '', site_bg_overlay: 40 })
+      body: JSON.stringify({ site_bg_url: '', site_bg_overlay: 40, site_bg_preset: 'default' })
     });
     assert.equal(resetRes.status, 200);
     assert.deepEqual(await (await fetch(`${base}/api/settings/appearance`)).json(), {
       site_bg_url: '',
-      site_bg_overlay: 40
+      site_bg_overlay: 40,
+      site_bg_preset: 'default'
     });
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
@@ -211,7 +295,7 @@ test('背景配置公开读取、鉴权更新、参数校验与本地上传校�
   }
 });
 
-test('本地 JSON 与 WebDAV 备份还原均包含首页背景与遮罩配置', async () => {
+test('本地 JSON 与 WebDAV 备份还原均包含 SVG 背景路径、预设标识与遮罩配置', async () => {
   const db = await initMemoryDb();
   try {
     await run(db, 'DELETE FROM cards');
@@ -226,29 +310,35 @@ test('本地 JSON 与 WebDAV 备份还原均包含首页背景与遮罩配置', 
     const settingsModule = require('../routes/settings');
     const backupModule = require('../routes/backup');
 
-    // 1. 设置自定义背景与遮罩暗度
+    // 1. 保存内置矢量预设并导出本地 JSON 快照
     await settingsModule.saveAppearanceSettings({
-      site_bg_url: '/uploads/bg-custom-star.webp',
-      site_bg_overlay: 62
+      site_bg_preset: 'aurora-peaks',
+      site_bg_overlay: 26
     });
 
-    // 2. 导出本地 JSON 备份，验证包含 siteSettings 和 tables.site_settings
-    const snapshot = await backupModule.createBackup();
-    assert.deepEqual(snapshot.siteSettings, {
-      site_bg_url: '/uploads/bg-custom-star.webp',
-      site_bg_overlay: 62
+    const presetSnapshot = await backupModule.createBackup();
+    assert.deepEqual(presetSnapshot.siteSettings, {
+      site_bg_url: '/backgrounds/aurora-peaks.svg',
+      site_bg_overlay: 26,
+      site_bg_preset: 'aurora-peaks'
     });
-    assert.ok(Array.isArray(snapshot.tables.site_settings));
     assert.equal(
-      snapshot.tables.site_settings.find(item => item.key === 'site_bg_url')?.value,
-      '/uploads/bg-custom-star.webp'
-    );
-    assert.equal(
-      snapshot.tables.site_settings.find(item => item.key === 'site_bg_overlay')?.value,
-      '62'
+      presetSnapshot.tables.site_settings.find(item => item.key === 'site_bg_preset')?.value,
+      'aurora-peaks'
     );
 
-    // 3. 验证 WebDAV 自动备份上传的 JSON 载荷也包含外观配置
+    // 2. 切换为自定义上传的 SVG 路径并验证 WebDAV 备份载荷
+    await settingsModule.saveAppearanceSettings({
+      site_bg_url: '/uploads/bg-custom-vector.svg',
+      site_bg_overlay: 62
+    });
+    const svgSnapshot = await backupModule.createBackup();
+    assert.deepEqual(svgSnapshot.siteSettings, {
+      site_bg_url: '/uploads/bg-custom-vector.svg',
+      site_bg_overlay: 62,
+      site_bg_preset: ''
+    });
+
     await run(
       db,
       `INSERT INTO webdav_config (id, url, username, password, updated_at) VALUES (1, 'https://dav.example.com/nav/', 'u', 'p', datetime('now'))
@@ -265,24 +355,25 @@ test('本地 JSON 与 WebDAV 备份还原均包含首页背景与遮罩配置', 
       }
     });
     assert.deepEqual(uploadedPayload?.siteSettings, {
-      site_bg_url: '/uploads/bg-custom-star.webp',
-      site_bg_overlay: 62
+      site_bg_url: '/uploads/bg-custom-vector.svg',
+      site_bg_overlay: 62,
+      site_bg_preset: ''
     });
 
-    // 4. 修改为其他背景后，执行还原应完整恢复原背景与遮罩暗度
-    await settingsModule.saveAppearanceSettings({
-      site_bg_url: 'https://other.example.com/temp.jpg',
-      site_bg_overlay: 10
-    });
+    // 3. 还原预设快照 -> 验证预设路径、预设标识与遮罩全部精确恢复
+    await backupModule.restoreBackup(presetSnapshot);
     assert.deepEqual(await settingsModule.getAppearanceSettings(), {
-      site_bg_url: 'https://other.example.com/temp.jpg',
-      site_bg_overlay: 10
+      site_bg_url: '/backgrounds/aurora-peaks.svg',
+      site_bg_overlay: 26,
+      site_bg_preset: 'aurora-peaks'
     });
 
-    await backupModule.restoreBackup(snapshot);
+    // 4. 还原自定义 SVG 快照 -> 验证 SVG 路径、空预设标识与遮罩精确恢复
+    await backupModule.restoreBackup(svgSnapshot);
     assert.deepEqual(await settingsModule.getAppearanceSettings(), {
-      site_bg_url: '/uploads/bg-custom-star.webp',
-      site_bg_overlay: 62
+      site_bg_url: '/uploads/bg-custom-vector.svg',
+      site_bg_overlay: 62,
+      site_bg_preset: ''
     });
 
     // 5. 兼容不含 siteSettings 的旧版备份：不报错且保留现有外观配置
@@ -296,7 +387,7 @@ test('本地 JSON 与 WebDAV 备份还原均包含首页背景与遮罩配置', 
       }
     });
     const rowsAfterLegacy = await all(db, 'SELECT key, value FROM site_settings ORDER BY key ASC');
-    assert.equal(rowsAfterLegacy.find(r => r.key === 'site_bg_url')?.value, '/uploads/bg-custom-star.webp');
+    assert.equal(rowsAfterLegacy.find(r => r.key === 'site_bg_url')?.value, '/uploads/bg-custom-vector.svg');
     assert.equal(rowsAfterLegacy.find(r => r.key === 'site_bg_overlay')?.value, '62');
   } finally {
     delete require.cache[dbPath];
@@ -306,7 +397,7 @@ test('本地 JSON 与 WebDAV 备份还原均包含首页背景与遮罩配置', 
   }
 });
 
-test('前台顶栏精简、页脚后台入口与后台背景设置界面关键结构校验', () => {
+test('前台顶栏精简、页脚后台入口与后台背景预设及 SVG 上传界面关键结构校验', () => {
   const homeSrc = fs.readFileSync(path.resolve(__dirname, '../web/src/views/Home.vue'), 'utf8');
   assert.doesNotMatch(homeSrc, /class="brand-badge"/);
   assert.doesNotMatch(homeSrc, /class="admin-entry-btn"/);
@@ -316,6 +407,9 @@ test('前台顶栏精简、页脚后台入口与后台背景设置界面关键�
 
   const userManageSrc = fs.readFileSync(path.resolve(__dirname, '../web/src/views/admin/UserManage.vue'), 'utf8');
   assert.match(userManageSrc, /首页背景设置/);
+  assert.match(userManageSrc, /image\/svg\+xml/);
+  assert.match(userManageSrc, /getSiteBgPresets/);
+  assert.match(userManageSrc, /selectBgPreset/);
   assert.match(userManageSrc, /uploadSiteBackground/);
   assert.match(userManageSrc, /updateSiteAppearance/);
   assert.match(userManageSrc, /max="80"/);
