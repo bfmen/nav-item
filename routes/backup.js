@@ -3,6 +3,7 @@ const http = require('http');
 const https = require('https');
 const authMiddleware = require('./authMiddleware');
 const db = require('../db');
+const { DEFAULT_BG_OVERLAY, validateBgUrl, validateBgOverlay } = require('./settings');
 
 const router = express.Router();
 const SCHEMA_VERSION = 2;
@@ -16,6 +17,11 @@ db.run(`CREATE TABLE IF NOT EXISTS webdav_config (
   username TEXT DEFAULT '',
   password TEXT DEFAULT '',
   updated_at TEXT
+)`);
+db.run(`CREATE TABLE IF NOT EXISTS site_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT '',
+  updated_at TEXT DEFAULT (datetime('now'))
 )`);
 
 const all = (sql, params = []) => new Promise((resolve, reject) => {
@@ -50,6 +56,43 @@ async function createBackup() {
 
   const webdavRow = await get('SELECT url, username, password FROM webdav_config WHERE id = 1').catch(() => null);
   const webdavConfig = webdavRow || { url: '', username: '', password: '' };
+
+  let siteSettingRows = [];
+  try {
+    siteSettingRows = await all('SELECT key, value, updated_at FROM site_settings ORDER BY key ASC');
+  } catch {
+    siteSettingRows = [];
+  }
+  const siteSettingsMap = new Map(siteSettingRows.map(row => [String(row.key), String(row.value ?? '')]));
+  let safeBgUrl = '';
+  try {
+    safeBgUrl = validateBgUrl(siteSettingsMap.get('site_bg_url') || '');
+  } catch {
+    safeBgUrl = '';
+  }
+  let safeBgOverlay = DEFAULT_BG_OVERLAY;
+  if (siteSettingsMap.has('site_bg_overlay')) {
+    try {
+      safeBgOverlay = validateBgOverlay(siteSettingsMap.get('site_bg_overlay'), DEFAULT_BG_OVERLAY);
+    } catch {
+      safeBgOverlay = DEFAULT_BG_OVERLAY;
+    }
+  }
+  const siteSettings = {
+    site_bg_url: safeBgUrl,
+    site_bg_overlay: safeBgOverlay
+  };
+  const normalizedSiteSettings = siteSettingRows.map(row => ({
+    key: String(row.key),
+    value: String(row.value ?? ''),
+    updated_at: row.updated_at || null
+  }));
+  if (!siteSettingsMap.has('site_bg_url')) {
+    normalizedSiteSettings.push({ key: 'site_bg_url', value: safeBgUrl, updated_at: null });
+  }
+  if (!siteSettingsMap.has('site_bg_overlay')) {
+    normalizedSiteSettings.push({ key: 'site_bg_overlay', value: String(safeBgOverlay), updated_at: null });
+  }
 
   const normalizedMenus = menus.map(m => ({
     id: Number(m.id),
@@ -103,10 +146,12 @@ async function createBackup() {
       sub_menus: normalizedSubMenus,
       cards: normalizedCards,
       users,
-      ai_configs: normalizedAiConfigs
+      ai_configs: normalizedAiConfigs,
+      site_settings: normalizedSiteSettings
     },
     webdavConfig,
-    aiConfigs: normalizedAiConfigs
+    aiConfigs: normalizedAiConfigs,
+    siteSettings
   };
 }
 
@@ -132,6 +177,10 @@ async function restoreBackup(backup) {
   const aiConfigs = Array.isArray(backup.tables.ai_configs)
     ? backup.tables.ai_configs
     : (Array.isArray(backup.aiConfigs) ? backup.aiConfigs : null);
+  const hasSiteSettings = Boolean(
+    (backup.siteSettings && typeof backup.siteSettings === 'object') ||
+    Array.isArray(backup.tables.site_settings)
+  );
 
   await run('PRAGMA foreign_keys = OFF');
   try {
@@ -146,6 +195,9 @@ async function restoreBackup(backup) {
       }
       if (aiConfigs !== null) {
         await run('DELETE FROM ai_configs');
+      }
+      if (hasSiteSettings) {
+        await run('DELETE FROM site_settings');
       }
       // 重置自增序列，避免历史最大 ID 干扰
       await run("DELETE FROM sqlite_sequence WHERE name IN ('cards', 'sub_menus', 'menus')").catch(() => {});
@@ -214,6 +266,45 @@ async function restoreBackup(backup) {
           await run(
             `INSERT INTO ai_configs (name, base_url, api_key, model, is_active, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))`,
             [String(cfg.name), String(cfg.base_url), String(cfg.api_key || ''), String(cfg.model || ''), cfg.is_active ? 1 : 0]
+          );
+        }
+      }
+
+      if (hasSiteSettings) {
+        const mergedSettings = new Map();
+        if (Array.isArray(backup.tables.site_settings)) {
+          for (const entry of backup.tables.site_settings) {
+            if (!entry || !entry.key) continue;
+            mergedSettings.set(String(entry.key), String(entry.value ?? ''));
+          }
+        }
+        if (backup.siteSettings && typeof backup.siteSettings === 'object') {
+          if (backup.siteSettings.site_bg_url !== undefined) {
+            mergedSettings.set('site_bg_url', String(backup.siteSettings.site_bg_url ?? ''));
+          }
+          if (backup.siteSettings.site_bg_overlay !== undefined) {
+            mergedSettings.set('site_bg_overlay', String(backup.siteSettings.site_bg_overlay ?? DEFAULT_BG_OVERLAY));
+          }
+        }
+        if (mergedSettings.has('site_bg_url')) {
+          try {
+            mergedSettings.set('site_bg_url', validateBgUrl(mergedSettings.get('site_bg_url')));
+          } catch {
+            mergedSettings.set('site_bg_url', '');
+          }
+        }
+        if (mergedSettings.has('site_bg_overlay')) {
+          try {
+            mergedSettings.set('site_bg_overlay', String(validateBgOverlay(mergedSettings.get('site_bg_overlay'), DEFAULT_BG_OVERLAY)));
+          } catch {
+            mergedSettings.set('site_bg_overlay', String(DEFAULT_BG_OVERLAY));
+          }
+        }
+        for (const [key, value] of mergedSettings.entries()) {
+          await run(
+            `INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+            [key, value]
           );
         }
       }

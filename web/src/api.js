@@ -83,3 +83,15 @@ export const listWebdavBackups = (data) => axios.post(`${BASE}/backup/webdav/lis
 export const restoreWebdavBackup = (data) => axios.post(`${BASE}/backup/webdav/restore`, data);
 export const getWebdavConfig = () => axios.get(`${BASE}/backup/webdav/config`);
 export const saveWebdavConfig = (data) => axios.put(`${BASE}/backup/webdav/config`, data);
+
+// 站点外观与首页背景设置 API
+export const getSiteAppearance = () => axios.get(`${BASE}/settings/appearance`);
+export const updateSiteAppearance = (data) => axios.put(`${BASE}/settings/appearance`, data);
+export const uploadSiteBackground = (file, overlay = undefined) => {
+  const formData = new FormData();
+  formData.append('background', file);
+  if (overlay !== undefined && overlay !== null) {
+    formData.append('site_bg_overlay', String(overlay));
+  }
+  return axios.post(`${BASE}/settings/background/upload`, formData);
+};

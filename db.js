@@ -76,6 +76,11 @@ db.serialize(() => {
     created_at TEXT DEFAULT (datetime('now')),
     updated_at TEXT DEFAULT (datetime('now'))
   )`);
+  db.run(`CREATE TABLE IF NOT EXISTS site_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT DEFAULT (datetime('now'))
+  )`);
 
   // 检查菜单表是否为空，若为空则插入默认菜单
   db.get('SELECT COUNT(*) as count FROM menus', (err, row) => {
@@ -340,6 +345,13 @@ db.ready = new Promise((resolve, reject) => {
               });
             }
             db.run('CREATE INDEX IF NOT EXISTS idx_cards_is_deleted ON cards(is_deleted)', err => {
+              if (err) reject(err);
+            });
+            db.run(`CREATE TABLE IF NOT EXISTS site_settings (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL DEFAULT '',
+              updated_at TEXT DEFAULT (datetime('now'))
+            )`, err => {
               if (err) reject(err);
             });
             db.get('SELECT current_login_at, current_login_ip, last_login_at, last_login_ip FROM users LIMIT 1', err => {

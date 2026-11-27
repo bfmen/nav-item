@@ -27,20 +27,25 @@ defineEmits(['select']);
 
 <style scoped>
 .menu-bar {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 4px;
   padding: 6px 10px;
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
   background: rgba(15, 23, 42, 0.55);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 9999px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  max-width: calc(100vw - 140px);
   overflow-x: auto;
+  overflow-y: hidden;
+  scroll-behavior: smooth;
   scrollbar-width: none;
+  -ms-overflow-style: none;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -79,15 +84,14 @@ defineEmits(['select']);
 
 @media (max-width: 768px) {
   .menu-bar {
-    justify-content: flex-start;
-    max-width: calc(100vw - 96px);
-    padding: 5px 7px;
+    max-width: calc(100vw - 20px);
+    padding: 5px 8px;
     gap: 2px;
   }
 
   .menu-pill {
     font-size: 13px;
-    padding: 6px 12px;
+    padding: 6px 13px;
   }
 }
 </style>

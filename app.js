@@ -10,6 +10,7 @@ const userRoutes = require('./routes/user');
 const faviconRoutes = require('./routes/favicon').createFaviconRouter();
 const backupRoutes = require('./routes/backup');
 const aiRoutes = require('./routes/ai');
+const settingsRoutes = require('./routes/settings');
 const compression = require('compression');
 const app = express();
 
@@ -53,6 +54,7 @@ app.use('/api', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/backup', backupRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/settings', settingsRoutes);
 
 const db = require('./db');
 if (require.main === module) {

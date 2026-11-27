@@ -164,12 +164,14 @@ function getNativeTitle(card) {
 }
 
 .icon-badge {
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
+  padding: 6px;
+  box-sizing: border-box;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  background: rgba(241, 245, 249, 0.24);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 6px rgba(2, 6, 23, 0.16);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -178,8 +180,8 @@ function getNativeTitle(card) {
 }
 
 .card-item:hover .icon-badge {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(241, 245, 249, 0.34);
+  border-color: rgba(255, 255, 255, 0.34);
   transform: scale(1.04);
 }
 
@@ -188,7 +190,7 @@ function getNativeTitle(card) {
   height: 22px;
   object-fit: contain;
   display: block;
-  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.34));
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.28));
 }
 
 .card-body {
@@ -279,8 +281,9 @@ function getNativeTitle(card) {
   }
 
   .icon-badge {
-    width: 34px;
-    height: 34px;
+    width: 36px;
+    height: 36px;
+    padding: 5px;
     border-radius: 9px;
   }
 

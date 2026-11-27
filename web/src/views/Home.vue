@@ -1,15 +1,7 @@
 <template>
-  <div class="home-container">
-    <!-- 顶部悬浮栏：左上极简站点标识 · 中央毛玻璃主菜单胶囊 · 右上低调齿轮后台入口 -->
+  <div class="home-container" :style="homeContainerStyle">
+    <!-- 顶部悬浮栏：居中纯净毛玻璃主菜单胶囊条 -->
     <header class="top-bar">
-      <button type="button" class="brand-badge" title="返回首页" @click="resetToHome">
-        <svg class="brand-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="9" />
-          <polygon points="15.5 8.5 13.5 13.5 8.5 15.5 10.5 10.5 15.5 8.5" />
-        </svg>
-        <span class="brand-text">Nav</span>
-      </button>
-
       <div class="top-bar-center">
         <MenuBar
           :menus="menus"
@@ -17,13 +9,6 @@
           @select="selectMainMenu"
         />
       </div>
-
-      <router-link to="/admin" class="admin-entry-btn" title="进入后台管理" aria-label="进入后台管理">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <circle cx="12" cy="12" r="3" />
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-        </svg>
-      </router-link>
     </header>
 
     <!-- 搜索区：全胶囊毛玻璃风格 + 柔和蓝紫聚焦微光 -->
@@ -148,17 +133,29 @@
     </main>
 
     <footer class="footer">
-      <p class="copyright">Nav-Item</p>
+      <div class="footer-inner">
+        <span class="copyright">Nav-Item</span>
+        <span class="footer-sep" aria-hidden="true">·</span>
+        <router-link to="/admin" class="footer-admin-link" title="进入后台管理" aria-label="进入后台管理">
+          <svg class="footer-admin-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+          <span>后台管理</span>
+        </router-link>
+      </div>
     </footer>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import { getMenus, getFilteredCards } from '../api';
+import { getMenus, getFilteredCards, getSiteAppearance } from '../api';
 import MenuBar from '../components/MenuBar.vue';
 import CardGrid from '../components/CardGrid.vue';
 import CardLogo from '../components/CardLogo.vue';
+
+const DEFAULT_BG_LAYERS = 'url("https://main.ssss.nyc.mn/background.webp"), url("/background.webp")';
 
 const menus = ref([]);
 const activeMenu = ref(null);
@@ -172,6 +169,51 @@ const dropdownOpen = ref(false);
 const selectedMatchIndex = ref(0);
 const searchInputRef = ref(null);
 const searchWrapperRef = ref(null);
+const activeBgUrl = ref('');
+const siteBgOverlay = ref(40);
+let bgPreloadToken = 0;
+
+function escapeCssUrl(url) {
+  return String(url || '').replace(/["\\\r\n]/g, '\\$&');
+}
+
+function buildOverlayBackground(percent) {
+  const num = Number(percent);
+  const clamped = Number.isFinite(num) ? Math.min(80, Math.max(0, num)) : 40;
+  const alpha = clamped / 100;
+  if (alpha <= 0) return 'rgba(2, 6, 23, 0)';
+  const top = (alpha * 0.82).toFixed(3);
+  const bottom = Math.min(0.92, alpha * 1.12).toFixed(3);
+  return `radial-gradient(circle at 50% 0%, rgba(15, 23, 42, ${top}) 0%, rgba(2, 6, 23, ${bottom}) 100%)`;
+}
+
+const homeContainerStyle = computed(() => ({
+  backgroundImage: activeBgUrl.value
+    ? `url("${escapeCssUrl(activeBgUrl.value)}"), ${DEFAULT_BG_LAYERS}`
+    : DEFAULT_BG_LAYERS,
+  '--site-bg-overlay': buildOverlayBackground(siteBgOverlay.value)
+}));
+
+function applyCustomBackground(url) {
+  const clean = String(url || '').trim();
+  const token = ++bgPreloadToken;
+  if (!clean) {
+    activeBgUrl.value = '';
+    return;
+  }
+  const probe = new Image();
+  probe.onload = () => {
+    if (token === bgPreloadToken) {
+      activeBgUrl.value = clean;
+    }
+  };
+  probe.onerror = () => {
+    if (token === bgPreloadToken) {
+      activeBgUrl.value = '';
+    }
+  };
+  probe.src = clean;
+}
 
 const searchEngines = [
   {
@@ -401,13 +443,6 @@ function formatHost(url) {
   }
 }
 
-async function resetToHome() {
-  clearSearch();
-  if (menus.value.length) {
-    await selectMainMenu(menus.value[0]);
-  }
-}
-
 async function selectMainMenu(menu) {
   clearSearch();
   activeMenu.value = menu;
@@ -437,7 +472,18 @@ onMounted(async () => {
   window.addEventListener('keydown', handleGlobalKeydown);
   document.addEventListener('click', handleDocumentClick);
 
-  const [menuRes, allCardsRes] = await Promise.allSettled([getMenus(), getFilteredCards()]);
+  const [menuRes, allCardsRes, appearanceRes] = await Promise.allSettled([
+    getMenus(),
+    getFilteredCards(),
+    getSiteAppearance()
+  ]);
+  if (appearanceRes.status === 'fulfilled') {
+    const cfg = appearanceRes.value?.data || {};
+    if (cfg.site_bg_overlay !== undefined && cfg.site_bg_overlay !== null) {
+      siteBgOverlay.value = Number(cfg.site_bg_overlay);
+    }
+    applyCustomBackground(cfg.site_bg_url || '');
+  }
   if (allCardsRes.status === 'fulfilled') {
     allCards.value = allCardsRes.value.data || [];
   }
@@ -460,7 +506,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .home-container {
   min-height: 100vh;
-  background-image: url('https://main.ssss.nyc.mn/background.webp');
+  background-image: url('https://main.ssss.nyc.mn/background.webp'), url('/background.webp');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -470,18 +516,20 @@ onBeforeUnmount(() => {
   position: relative;
   padding-top: 96px;
   box-sizing: border-box;
+  transition: background-image 0.25s ease;
 }
 
 .home-container::before {
   content: '';
   position: fixed;
   inset: 0;
-  background: radial-gradient(circle at 50% 0%, rgba(15, 23, 42, 0.24) 0%, rgba(2, 6, 23, 0.56) 100%);
+  background: var(--site-bg-overlay, radial-gradient(circle at 50% 0%, rgba(15, 23, 42, 0.328) 0%, rgba(2, 6, 23, 0.448) 100%));
   z-index: 1;
   pointer-events: none;
+  transition: background 0.25s ease;
 }
 
-/* 顶部悬浮导航层（左品牌 · 中胶囊 · 右后台入口） */
+/* 顶部悬浮导航层：居中纯净展示主菜单胶囊 */
 .top-bar {
   position: fixed;
   top: 16px;
@@ -491,7 +539,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 22px;
+  padding: 0 16px;
+  box-sizing: border-box;
   pointer-events: none;
 }
 
@@ -499,64 +548,7 @@ onBeforeUnmount(() => {
   pointer-events: auto;
   display: flex;
   justify-content: center;
-}
-
-.brand-badge {
-  position: absolute;
-  left: 22px;
-  pointer-events: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 36px;
-  padding: 0 12px;
-  border-radius: 9999px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(15, 23, 42, 0.36);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  color: rgba(241, 245, 249, 0.68);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.4px;
-  cursor: pointer;
-  transition: color 0.2s ease, background-color 0.2s ease, border-color 0.2s ease;
-}
-
-.brand-badge:hover {
-  color: #ffffff;
-  background: rgba(15, 23, 42, 0.62);
-  border-color: rgba(255, 255, 255, 0.2);
-}
-
-.brand-icon {
-  opacity: 0.85;
-}
-
-.admin-entry-btn {
-  position: absolute;
-  right: 22px;
-  pointer-events: auto;
-  width: 36px;
-  height: 36px;
-  border-radius: 9999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(241, 245, 249, 0.62);
-  background: rgba(15, 23, 42, 0.36);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  text-decoration: none;
-  transition: color 0.2s ease, background-color 0.2s ease, transform 0.28s ease, border-color 0.2s ease;
-}
-
-.admin-entry-btn:hover {
-  color: #ffffff;
-  background: rgba(15, 23, 42, 0.66);
-  border-color: rgba(255, 255, 255, 0.22);
-  transform: rotate(35deg);
+  max-width: 100%;
 }
 
 /* 搜索区（充足呼吸感） */
@@ -775,11 +767,14 @@ onBeforeUnmount(() => {
 }
 
 .dropdown-logo-wrap {
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
+  padding: 4px;
+  box-sizing: border-box;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(241, 245, 249, 0.24);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -947,16 +942,52 @@ onBeforeUnmount(() => {
 .footer {
   margin-top: auto;
   text-align: center;
-  padding: 2.2rem 0 1.4rem;
+  padding: 2.2rem 16px 1.5rem;
   position: relative;
   z-index: 2;
 }
 
-.copyright {
-  color: rgba(255, 255, 255, 0.28);
+.footer-inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.36);
   font-size: 12px;
-  letter-spacing: 0.8px;
+  letter-spacing: 0.6px;
+}
+
+.copyright {
   margin: 0;
+}
+
+.footer-sep {
+  opacity: 0.55;
+  user-select: none;
+}
+
+.footer-admin-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: rgba(255, 255, 255, 0.36);
+  text-decoration: none;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.footer-admin-link:hover {
+  color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.footer-admin-icon {
+  transition: transform 0.28s ease;
+}
+
+.footer-admin-link:hover .footer-admin-icon {
+  transform: rotate(35deg);
 }
 
 @media (max-width: 768px) {
@@ -967,22 +998,6 @@ onBeforeUnmount(() => {
   .top-bar {
     top: 12px;
     padding: 0 10px;
-  }
-
-  .brand-badge {
-    left: 10px;
-    padding: 0 9px;
-    height: 34px;
-  }
-
-  .brand-text {
-    display: none;
-  }
-
-  .admin-entry-btn {
-    right: 10px;
-    width: 34px;
-    height: 34px;
   }
 
   .search-section {
