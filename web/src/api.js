@@ -88,11 +88,14 @@ export const saveWebdavConfig = (data) => axios.put(`${BASE}/backup/webdav/confi
 export const getSiteBgPresets = () => axios.get(`${BASE}/settings/presets`);
 export const getSiteAppearance = () => axios.get(`${BASE}/settings/appearance`);
 export const updateSiteAppearance = (data) => axios.put(`${BASE}/settings/appearance`, data);
-export const uploadSiteBackground = (file, overlay = undefined) => {
+export const uploadSiteBackground = (file, overlay = undefined, theme = 'dark') => {
   const formData = new FormData();
   formData.append('background', file);
+  const normalizedTheme = theme === 'light' ? 'light' : 'dark';
+  formData.append('theme', normalizedTheme);
   if (overlay !== undefined && overlay !== null) {
-    formData.append('site_bg_overlay', String(overlay));
+    formData.append('overlay', String(overlay));
+    formData.append(normalizedTheme === 'light' ? 'day_bg_overlay' : 'night_bg_overlay', String(overlay));
   }
   return axios.post(`${BASE}/settings/background/upload`, formData);
 };

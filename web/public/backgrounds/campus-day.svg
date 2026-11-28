@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <!-- 晴空澄澈蓝天渐变 -->
+    <linearGradient id="daySky" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2c82e0"/>
+      <stop offset="32%" stop-color="#53a8f5"/>
+      <stop offset="65%" stop-color="#9ad4ff"/>
+      <stop offset="100%" stop-color="#e3f4ff"/>
+    </linearGradient>
+    <!-- 柔和日光光晕 -->
+    <radialGradient id="sunHalo" cx="78%" cy="22%" r="36%">
+      <stop offset="0%" stop-color="#fffef5" stop-opacity="0.96"/>
+      <stop offset="22%" stop-color="#fff4cc" stop-opacity="0.62"/>
+      <stop offset="58%" stop-color="#b8e4ff" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#53a8f5" stop-opacity="0"/>
+    </radialGradient>
+    <!-- 蓬松白云 -->
+    <linearGradient id="cloudWhite" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.98"/>
+      <stop offset="72%" stop-color="#f0f8ff" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#cde6fb" stop-opacity="0.72"/>
+    </linearGradient>
+    <!-- 远山青翠 -->
+    <linearGradient id="farHill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#87c2dc" stop-opacity="0.78"/>
+      <stop offset="100%" stop-color="#6aa7c9" stop-opacity="0.88"/>
+    </linearGradient>
+    <!-- 教学楼墙体 -->
+    <linearGradient id="buildingWall" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f8fbff"/>
+      <stop offset="100%" stop-color="#dce7f4"/>
+    </linearGradient>
+    <linearGradient id="buildingSide" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#cfe0f2"/>
+      <stop offset="100%" stop-color="#b0c7e0"/>
+    </linearGradient>
+    <!-- 校园草坪 -->
+    <linearGradient id="grassField" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#69c66c"/>
+      <stop offset="52%" stop-color="#4bb25d"/>
+      <stop offset="100%" stop-color="#36964e"/>
+    </linearGradient>
+    <!-- 塑胶红跑道 -->
+    <linearGradient id="redTrack" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#de6456"/>
+      <stop offset="55%" stop-color="#cc4f45"/>
+      <stop offset="100%" stop-color="#b63f38"/>
+    </linearGradient>
+    <!-- 树冠绿意 -->
+    <linearGradient id="treeCanopy" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#58b967"/>
+      <stop offset="100%" stop-color="#2c7f47"/>
+    </linearGradient>
+    <filter id="cloudSoft" x="-8%" y="-8%" width="116%" height="116%">
+      <feGaussianBlur stdDeviation="4"/>
+    </filter>
+  </defs>
+
+  <!-- 晴朗蓝天与日光 -->
+  <rect width="1920" height="1080" fill="url(#daySky)"/>
+  <rect width="1920" height="1080" fill="url(#sunHalo)"/>
+  <circle cx="1498" cy="236" r="52" fill="#fffef2" opacity="0.92"/>
+  <circle cx="1498" cy="236" r="88" fill="#fff6d4" opacity="0.32"/>
+
+  <!-- 远处柔和流云 -->
+  <g fill="#ffffff" opacity="0.52" filter="url(#cloudSoft)">
+    <ellipse cx="360" cy="250" rx="220" ry="32"/>
+    <ellipse cx="1080" cy="195" rx="260" ry="30"/>
+    <ellipse cx="1690" cy="360" rx="210" ry="26"/>
+  </g>
+
+  <!-- 蓬松积云（动漫晴空层次） -->
+  <g fill="url(#cloudWhite)">
+    <path d="M110 385 C110 340 165 316 208 334 C232 288 308 278 348 318 C392 292 465 316 472 365 C512 366 534 398 518 422 L95 422 C78 408 86 385 110 385 Z"/>
+    <path d="M760 336 C762 292 820 264 870 286 C905 228 1004 222 1046 274 C1100 248 1178 276 1188 330 C1232 332 1255 368 1236 392 L742 392 C724 374 734 338 760 336 Z" opacity="0.94"/>
+    <path d="M1380 442 C1384 405 1434 384 1474 400 C1502 360 1574 356 1608 394 C1650 378 1708 402 1712 442 C1746 444 1762 472 1748 490 L1366 490 C1352 476 1358 444 1380 442 Z" opacity="0.88"/>
+  </g>
+
+  <!-- 远山连绵 -->
+  <path d="M0 715 Q260 638 560 688 T1180 676 T1700 648 L1920 680 L1920 820 L0 820 Z" fill="url(#farHill)"/>
+
+  <!-- 校园教学楼与钟楼 -->
+  <g>
+    <!-- 教学楼主体 -->
+    <rect x="255" y="655" width="510" height="165" rx="4" fill="url(#buildingWall)"/>
+    <rect x="765" y="672" width="46" height="148" fill="url(#buildingSide)"/>
+    <!-- 屋顶檐口 -->
+    <rect x="244" y="644" width="532" height="14" rx="2" fill="#e87a6a"/>
+    <rect x="765" y="644" width="52" height="14" rx="2" fill="#c96054"/>
+    <!-- 屋顶钟楼 -->
+    <rect x="652" y="576" width="56" height="72" rx="3" fill="url(#buildingWall)"/>
+    <polygon points="644,578 680,542 716,578" fill="#d96b5c"/>
+    <circle cx="680" cy="608" r="14" fill="#ffffff" stroke="#7c98b6" stroke-width="2.5"/>
+    <line x1="680" y1="608" x2="680" y2="599" stroke="#36506c" stroke-width="2" stroke-linecap="round"/>
+    <line x1="680" y1="608" x2="687" y2="611" stroke="#36506c" stroke-width="2" stroke-linecap="round"/>
+    <!-- 教室明亮玻璃窗 -->
+    <g fill="#73b4e8" opacity="0.86">
+      <rect x="284" y="680" width="42" height="26" rx="2"/>
+      <rect x="342" y="680" width="42" height="26" rx="2"/>
+      <rect x="400" y="680" width="42" height="26" rx="2"/>
+      <rect x="458" y="680" width="42" height="26" rx="2"/>
+      <rect x="516" y="680" width="42" height="26" rx="2"/>
+      <rect x="574" y="680" width="42" height="26" rx="2"/>
+      <rect x="632" y="680" width="42" height="26" rx="2"/>
+      <rect x="690" y="680" width="42" height="26" rx="2"/>
+      <rect x="284" y="726" width="42" height="26" rx="2"/>
+      <rect x="342" y="726" width="42" height="26" rx="2"/>
+      <rect x="400" y="726" width="42" height="26" rx="2"/>
+      <rect x="458" y="726" width="42" height="26" rx="2"/>
+      <rect x="516" y="726" width="42" height="26" rx="2"/>
+      <rect x="574" y="726" width="42" height="26" rx="2"/>
+      <rect x="632" y="726" width="42" height="26" rx="2"/>
+      <rect x="690" y="726" width="42" height="26" rx="2"/>
+    </g>
+    <!-- 体育馆弧形屋顶 -->
+    <path d="M1270 742 Q1465 668 1660 742 L1660 820 L1270 820 Z" fill="url(#buildingWall)"/>
+    <path d="M1260 744 Q1465 662 1670 744" fill="none" stroke="#85a8cc" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <!-- 校园林荫树群 -->
+  <g fill="url(#treeCanopy)">
+    <path d="M0 780 Q70 700 155 742 Q225 692 295 760 L295 845 L0 845 Z"/>
+    <path d="M845 785 Q925 724 1015 765 Q1085 722 1170 778 L1170 845 L845 845 Z" opacity="0.9"/>
+    <path d="M1590 778 Q1695 702 1805 748 Q1865 718 1920 752 L1920 845 L1590 845 Z"/>
+  </g>
+
+  <!-- 绿茵操场 -->
+  <path d="M0 808 Q520 784 1020 798 T1920 792 L1920 1080 L0 1080 Z" fill="url(#grassField)"/>
+
+  <!-- 操场塑胶红跑道（远景大弯道） -->
+  <path d="M-80 1080 Q460 858 1180 872 T2020 970 L2020 1120 L-80 1120 Z" fill="url(#redTrack)"/>
+  <!-- 内侧草坪弧边 -->
+  <path d="M260 1080 Q760 956 1440 976 T2020 1068 L2020 1120 L260 1120 Z" fill="#4cb55e"/>
+  <!-- 清晰白色跑道分道线 -->
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" opacity="0.82">
+    <path d="M-40 1072 Q480 872 1190 886 T1990 982" stroke-width="3.2"/>
+    <path d="M30 1082 Q540 896 1230 910 T1995 1004" stroke-width="2.6" opacity="0.72"/>
+    <path d="M105 1086 Q605 920 1280 934 T2000 1026" stroke-width="2.4" opacity="0.68"/>
+    <path d="M190 1088 Q680 944 1350 958 T2005 1050" stroke-width="3"/>
+  </g>
+
+  <!-- 轻盈高空电线与树影细节 -->
+  <g stroke="#50769a" stroke-linecap="round" fill="none" opacity="0.34">
+    <path d="M0 540 Q560 612 1920 568" stroke-width="1.3"/>
+    <path d="M0 570 Q680 640 1920 594" stroke-width="1.1"/>
+  </g>
+</svg>

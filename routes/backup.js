@@ -3,7 +3,14 @@ const http = require('http');
 const https = require('https');
 const authMiddleware = require('./authMiddleware');
 const db = require('../db');
-const { DEFAULT_BG_OVERLAY, resolvePresetId, validateBgUrl, validateBgOverlay } = require('./settings');
+const {
+  DEFAULT_DAY_BG_OVERLAY,
+  DEFAULT_NIGHT_BG_OVERLAY,
+  DEFAULT_THEME,
+  buildAppearanceFromMap,
+  normalizeBgHistory,
+  validateDefaultTheme
+} = require('./settings');
 
 const router = express.Router();
 const SCHEMA_VERSION = 2;
@@ -64,40 +71,29 @@ async function createBackup() {
     siteSettingRows = [];
   }
   const siteSettingsMap = new Map(siteSettingRows.map(row => [String(row.key), String(row.value ?? '')]));
-  let safeBgUrl = '';
-  try {
-    safeBgUrl = validateBgUrl(siteSettingsMap.get('site_bg_url') || '');
-  } catch {
-    safeBgUrl = '';
+  const siteSettings = buildAppearanceFromMap(siteSettingsMap);
+  const canonicalEntries = [
+    ['day_bg_url', siteSettings.day_bg_url],
+    ['day_bg_overlay', String(siteSettings.day_bg_overlay)],
+    ['day_bg_preset', siteSettings.day_bg_preset],
+    ['night_bg_url', siteSettings.night_bg_url],
+    ['night_bg_overlay', String(siteSettings.night_bg_overlay)],
+    ['night_bg_preset', siteSettings.night_bg_preset],
+    ['default_theme', siteSettings.default_theme],
+    ['bg_history', JSON.stringify(siteSettings.bg_history)],
+    ['site_bg_url', siteSettings.site_bg_url],
+    ['site_bg_overlay', String(siteSettings.site_bg_overlay)],
+    ['site_bg_preset', siteSettings.site_bg_preset]
+  ];
+  const rowMap = new Map(siteSettingRows.map(row => [
+    String(row.key),
+    { key: String(row.key), value: String(row.value ?? ''), updated_at: row.updated_at || null }
+  ]));
+  for (const [k, v] of canonicalEntries) {
+    const existingRow = rowMap.get(k);
+    rowMap.set(k, { key: k, value: v, updated_at: existingRow?.updated_at || null });
   }
-  let safeBgOverlay = DEFAULT_BG_OVERLAY;
-  if (siteSettingsMap.has('site_bg_overlay')) {
-    try {
-      safeBgOverlay = validateBgOverlay(siteSettingsMap.get('site_bg_overlay'), DEFAULT_BG_OVERLAY);
-    } catch {
-      safeBgOverlay = DEFAULT_BG_OVERLAY;
-    }
-  }
-  const safeBgPreset = resolvePresetId(safeBgUrl, siteSettingsMap.get('site_bg_preset') || '');
-  const siteSettings = {
-    site_bg_url: safeBgUrl,
-    site_bg_overlay: safeBgOverlay,
-    site_bg_preset: safeBgPreset
-  };
-  const normalizedSiteSettings = siteSettingRows.map(row => ({
-    key: String(row.key),
-    value: String(row.value ?? ''),
-    updated_at: row.updated_at || null
-  }));
-  if (!siteSettingsMap.has('site_bg_url')) {
-    normalizedSiteSettings.push({ key: 'site_bg_url', value: safeBgUrl, updated_at: null });
-  }
-  if (!siteSettingsMap.has('site_bg_overlay')) {
-    normalizedSiteSettings.push({ key: 'site_bg_overlay', value: String(safeBgOverlay), updated_at: null });
-  }
-  if (!siteSettingsMap.has('site_bg_preset')) {
-    normalizedSiteSettings.push({ key: 'site_bg_preset', value: safeBgPreset, updated_at: null });
-  }
+  const normalizedSiteSettings = [...rowMap.values()].sort((a, b) => a.key.localeCompare(b.key));
 
   const normalizedMenus = menus.map(m => ({
     id: Number(m.id),
@@ -284,33 +280,42 @@ async function restoreBackup(backup) {
           }
         }
         if (backup.siteSettings && typeof backup.siteSettings === 'object') {
-          if (backup.siteSettings.site_bg_url !== undefined) {
-            mergedSettings.set('site_bg_url', String(backup.siteSettings.site_bg_url ?? ''));
+          const s = backup.siteSettings;
+          if (s.day_bg_url !== undefined) mergedSettings.set('day_bg_url', String(s.day_bg_url ?? ''));
+          if (s.day_bg_overlay !== undefined) mergedSettings.set('day_bg_overlay', String(s.day_bg_overlay ?? DEFAULT_DAY_BG_OVERLAY));
+          if (s.day_bg_preset !== undefined) mergedSettings.set('day_bg_preset', String(s.day_bg_preset ?? ''));
+          if (s.night_bg_url !== undefined) mergedSettings.set('night_bg_url', String(s.night_bg_url ?? ''));
+          if (s.night_bg_overlay !== undefined) mergedSettings.set('night_bg_overlay', String(s.night_bg_overlay ?? DEFAULT_NIGHT_BG_OVERLAY));
+          if (s.night_bg_preset !== undefined) mergedSettings.set('night_bg_preset', String(s.night_bg_preset ?? ''));
+          if (s.default_theme !== undefined) {
+            try {
+              mergedSettings.set('default_theme', validateDefaultTheme(s.default_theme, DEFAULT_THEME));
+            } catch {
+              mergedSettings.set('default_theme', DEFAULT_THEME);
+            }
           }
-          if (backup.siteSettings.site_bg_overlay !== undefined) {
-            mergedSettings.set('site_bg_overlay', String(backup.siteSettings.site_bg_overlay ?? DEFAULT_BG_OVERLAY));
+          if (s.bg_history !== undefined) {
+            mergedSettings.set('bg_history', JSON.stringify(normalizeBgHistory(s.bg_history)));
           }
-          if (backup.siteSettings.site_bg_preset !== undefined) {
-            mergedSettings.set('site_bg_preset', String(backup.siteSettings.site_bg_preset ?? ''));
-          }
+          // 兼容旧版单背景字段
+          if (s.site_bg_url !== undefined) mergedSettings.set('site_bg_url', String(s.site_bg_url ?? ''));
+          if (s.site_bg_overlay !== undefined) mergedSettings.set('site_bg_overlay', String(s.site_bg_overlay ?? DEFAULT_NIGHT_BG_OVERLAY));
+          if (s.site_bg_preset !== undefined) mergedSettings.set('site_bg_preset', String(s.site_bg_preset ?? ''));
         }
-        if (mergedSettings.has('site_bg_url')) {
-          try {
-            mergedSettings.set('site_bg_url', validateBgUrl(mergedSettings.get('site_bg_url')));
-          } catch {
-            mergedSettings.set('site_bg_url', '');
-          }
-        }
-        if (mergedSettings.has('site_bg_overlay')) {
-          try {
-            mergedSettings.set('site_bg_overlay', String(validateBgOverlay(mergedSettings.get('site_bg_overlay'), DEFAULT_BG_OVERLAY)));
-          } catch {
-            mergedSettings.set('site_bg_overlay', String(DEFAULT_BG_OVERLAY));
-          }
-        }
-        const restoredBgUrl = mergedSettings.get('site_bg_url') || '';
-        const restoredPreset = resolvePresetId(restoredBgUrl, mergedSettings.get('site_bg_preset') || '');
-        mergedSettings.set('site_bg_preset', restoredPreset);
+
+        const normalizedAppearance = buildAppearanceFromMap(mergedSettings);
+        mergedSettings.set('day_bg_url', normalizedAppearance.day_bg_url);
+        mergedSettings.set('day_bg_overlay', String(normalizedAppearance.day_bg_overlay));
+        mergedSettings.set('day_bg_preset', normalizedAppearance.day_bg_preset);
+        mergedSettings.set('night_bg_url', normalizedAppearance.night_bg_url);
+        mergedSettings.set('night_bg_overlay', String(normalizedAppearance.night_bg_overlay));
+        mergedSettings.set('night_bg_preset', normalizedAppearance.night_bg_preset);
+        mergedSettings.set('default_theme', normalizedAppearance.default_theme);
+        mergedSettings.set('bg_history', JSON.stringify(normalizedAppearance.bg_history));
+        mergedSettings.set('site_bg_url', normalizedAppearance.site_bg_url);
+        mergedSettings.set('site_bg_overlay', String(normalizedAppearance.site_bg_overlay));
+        mergedSettings.set('site_bg_preset', normalizedAppearance.site_bg_preset);
+
         for (const [key, value] of mergedSettings.entries()) {
           await run(
             `INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))

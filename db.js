@@ -352,11 +352,52 @@ db.ready = new Promise((resolve, reject) => {
               value TEXT NOT NULL DEFAULT '',
               updated_at TEXT DEFAULT (datetime('now'))
             )`, err => {
-              if (err) reject(err);
-            });
-            db.get('SELECT current_login_at, current_login_ip, last_login_at, last_login_ip FROM users LIMIT 1', err => {
-              if (err) reject(err);
-              else resolve();
+              if (err) return reject(err);
+              db.all('SELECT key, value FROM site_settings', (settingsErr, settingRows) => {
+                if (settingsErr) return reject(settingsErr);
+                const existing = new Map((settingRows || []).map(row => [String(row.key), String(row.value ?? '')]));
+                const legacyUrlRaw = String(existing.get('site_bg_url') || '').trim();
+                const migratedNightUrl = !legacyUrlRaw || legacyUrlRaw === '/backgrounds/twilight-campus.svg'
+                  ? '/backgrounds/campus-night.svg'
+                  : legacyUrlRaw;
+                const migratedNightOverlay = existing.has('site_bg_overlay') && legacyUrlRaw
+                  ? String(existing.get('site_bg_overlay'))
+                  : '24';
+                const legacyPresetRaw = String(existing.get('site_bg_preset') || '').trim();
+                const migratedNightPreset = !legacyUrlRaw || legacyUrlRaw === '/backgrounds/twilight-campus.svg'
+                  ? 'campus-night'
+                  : (legacyPresetRaw === 'twilight-campus' || legacyPresetRaw === 'default' ? 'campus-night' : legacyPresetRaw);
+
+                const defaults = [
+                  ['day_bg_url', '/backgrounds/campus-day.svg'],
+                  ['day_bg_overlay', '0'],
+                  ['day_bg_preset', 'campus-day'],
+                  ['night_bg_url', migratedNightUrl],
+                  ['night_bg_overlay', migratedNightOverlay],
+                  ['night_bg_preset', migratedNightPreset],
+                  ['default_theme', 'auto'],
+                  ['bg_history', '[]'],
+                  ['site_bg_url', migratedNightUrl],
+                  ['site_bg_overlay', migratedNightOverlay],
+                  ['site_bg_preset', migratedNightPreset]
+                ];
+
+                db.serialize(() => {
+                  for (const [k, v] of defaults) {
+                    db.run(
+                      `INSERT OR IGNORE INTO site_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))`,
+                      [k, v],
+                      insErr => {
+                        if (insErr) reject(insErr);
+                      }
+                    );
+                  }
+                  db.get('SELECT current_login_at, current_login_ip, last_login_at, last_login_ip FROM users LIMIT 1', err => {
+                    if (err) reject(err);
+                    else resolve();
+                  });
+                });
+              });
             });
           });
         });

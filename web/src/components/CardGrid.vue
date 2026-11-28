@@ -130,13 +130,15 @@ function getNativeTitle(card) {
   }
 }
 
-@media (max-width: 460px) {
+@media (max-width: 520px) {
   .card-grid {
+    width: calc(100vw - 24px);
     grid-template-columns: 1fr;
+    gap: 10px;
   }
 }
 
-/* 主流横向信息卡片：Apple / Linear / Sun-Panel 暗色毛玻璃质感 */
+/* 横向信息卡片：白天清透白磨砂 / 夜晚暗色毛玻璃自适应 */
 .card-item {
   display: flex;
   align-items: center;
@@ -146,21 +148,21 @@ function getNativeTitle(card) {
   box-sizing: border-box;
   border-radius: 14px;
   text-decoration: none;
-  color: #f8fafc;
-  background: rgba(17, 24, 39, 0.42);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  color: var(--card-title, #f8fafc);
+  background: var(--card-bg, rgba(15, 23, 42, 0.45));
+  backdrop-filter: blur(var(--card-blur, 14px));
+  -webkit-backdrop-filter: blur(var(--card-blur, 14px));
+  border: 1px solid var(--card-border, rgba(255, 255, 255, 0.08));
+  box-shadow: var(--card-shadow, 0 4px 16px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.04));
   transition: transform 0.2s ease, background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
   min-width: 0;
 }
 
 .card-item:hover {
   transform: translateY(-2px);
-  background: rgba(30, 41, 59, 0.62);
-  border-color: rgba(255, 255, 255, 0.22);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28), 0 0 20px rgba(129, 140, 248, 0.1);
+  background: var(--card-hover-bg, rgba(30, 41, 59, 0.62));
+  border-color: var(--card-hover-border, rgba(255, 255, 255, 0.22));
+  box-shadow: var(--card-hover-shadow, 0 12px 28px rgba(0, 0, 0, 0.28), 0 0 20px rgba(129, 140, 248, 0.1));
 }
 
 .icon-badge {
@@ -169,9 +171,9 @@ function getNativeTitle(card) {
   padding: 6px;
   box-sizing: border-box;
   border-radius: 10px;
-  background: rgba(241, 245, 249, 0.24);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 6px rgba(2, 6, 23, 0.16);
+  background: var(--card-icon-bg, rgba(241, 245, 249, 0.24));
+  border: 1px solid var(--card-icon-border, rgba(255, 255, 255, 0.22));
+  box-shadow: var(--card-icon-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 2px 6px rgba(2, 6, 23, 0.16));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -180,8 +182,8 @@ function getNativeTitle(card) {
 }
 
 .card-item:hover .icon-badge {
-  background: rgba(241, 245, 249, 0.34);
-  border-color: rgba(255, 255, 255, 0.34);
+  background: var(--card-icon-hover-bg, rgba(241, 245, 249, 0.34));
+  border-color: var(--card-icon-hover-border, rgba(255, 255, 255, 0.34));
   transform: scale(1.04);
 }
 
@@ -190,7 +192,7 @@ function getNativeTitle(card) {
   height: 22px;
   object-fit: contain;
   display: block;
-  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.28));
+  filter: var(--card-icon-filter, drop-shadow(0 1px 2px rgba(15, 23, 42, 0.28)));
 }
 
 .card-body {
@@ -215,7 +217,7 @@ function getNativeTitle(card) {
   min-width: 0;
   font-size: 14px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.95);
+  color: var(--card-title, rgba(255, 255, 255, 0.95));
   line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
@@ -225,9 +227,9 @@ function getNativeTitle(card) {
 .card-cat-tag {
   font-size: 10.5px;
   font-weight: 500;
-  color: rgba(199, 210, 254, 0.88);
-  background: rgba(99, 102, 241, 0.22);
-  border: 1px solid rgba(129, 140, 248, 0.24);
+  color: var(--card-cat-text, rgba(199, 210, 254, 0.88));
+  background: var(--card-cat-bg, rgba(99, 102, 241, 0.22));
+  border: 1px solid var(--card-cat-border, rgba(129, 140, 248, 0.24));
   padding: 1px 6px;
   border-radius: 999px;
   white-space: nowrap;
@@ -239,7 +241,7 @@ function getNativeTitle(card) {
 
 .card-desc {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.58);
+  color: var(--card-desc, rgba(255, 255, 255, 0.58));
   line-height: 1.3;
   white-space: nowrap;
   overflow: hidden;
@@ -250,12 +252,13 @@ function getNativeTitle(card) {
   grid-column: 1 / -1;
   text-align: center;
   padding: 2.6rem 1rem;
-  color: rgba(226, 232, 240, 0.7);
+  color: var(--empty-text, rgba(226, 232, 240, 0.7));
   font-size: 14px;
-  background: rgba(15, 23, 42, 0.36);
+  background: var(--empty-bg, rgba(15, 23, 42, 0.36));
   backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--empty-border, rgba(255, 255, 255, 0.08));
 }
 
 .animate-fadeUp .card-item {
@@ -298,6 +301,35 @@ function getNativeTitle(card) {
 
   .card-desc {
     font-size: 11.5px;
+  }
+}
+
+@media (max-width: 520px) {
+  .card-item {
+    height: auto;
+    min-height: 68px;
+    padding: 12px 14px;
+    gap: 12px;
+  }
+
+  .icon-badge {
+    width: 40px;
+    height: 40px;
+    padding: 6px;
+    border-radius: 10px;
+  }
+
+  .link-icon {
+    width: 22px;
+    height: 22px;
+  }
+
+  .card-title {
+    font-size: 14px;
+  }
+
+  .card-desc {
+    font-size: 12px;
   }
 }
 

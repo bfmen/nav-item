@@ -6,11 +6,22 @@ const multer = require('multer');
 const db = require('../db');
 const authMiddleware = require('./authMiddleware');
 
-const DEFAULT_BG_OVERLAY = 40;
+const DEFAULT_DAY_BG_URL = '/backgrounds/campus-day.svg';
+const DEFAULT_DAY_BG_OVERLAY = 0;
+const DEFAULT_DAY_BG_PRESET = 'campus-day';
+const DEFAULT_NIGHT_BG_URL = '/backgrounds/campus-night.svg';
+const DEFAULT_NIGHT_BG_OVERLAY = 24;
+const DEFAULT_NIGHT_BG_PRESET = 'campus-night';
+const DEFAULT_BG_OVERLAY = DEFAULT_NIGHT_BG_OVERLAY;
+const DEFAULT_THEME = 'auto';
 const MIN_BG_OVERLAY = 0;
 const MAX_BG_OVERLAY = 80;
+const MAX_BG_HISTORY = 2;
 const MAX_BG_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const DEFAULT_UPLOADS_DIR = path.join(__dirname, '../uploads');
+
+const ALLOWED_THEMES = new Set(['light', 'dark', 'auto']);
+const ALLOWED_BG_THEMES = new Set(['light', 'dark']);
 
 const ALLOWED_MIME_TYPES = new Set([
   'image/jpeg',
@@ -24,30 +35,44 @@ const ALLOWED_MIME_TYPES = new Set([
 
 const BUILTIN_BG_PRESETS = Object.freeze([
   {
-    id: 'default',
-    name: '默认深空山脉',
-    desc: '经典静谧星空壁纸，开箱即用',
-    tag: '默认',
-    type: 'default',
-    url: '',
-    preview_url: '/background.webp',
-    overlay: 40
+    id: 'campus-day',
+    name: '青春晴空校园',
+    desc: '晴空白云、绿茵操场与红跑道，清爽明亮',
+    tag: '白天推荐',
+    recommended_theme: 'light',
+    type: 'svg',
+    url: '/backgrounds/campus-day.svg',
+    preview_url: '/backgrounds/campus-day.svg',
+    overlay: 0
   },
   {
-    id: 'twilight-campus',
+    id: 'campus-night',
     name: '青春暮色校园',
-    desc: '日落紫霞、晚风流云与校园剪影',
-    tag: '矢量',
+    desc: '日落紫霞、暮色星光与暖灯校园剪影',
+    tag: '夜晚推荐',
+    recommended_theme: 'dark',
     type: 'svg',
-    url: '/backgrounds/twilight-campus.svg',
-    preview_url: '/backgrounds/twilight-campus.svg',
-    overlay: 28
+    url: '/backgrounds/campus-night.svg',
+    preview_url: '/backgrounds/campus-night.svg',
+    overlay: 24
+  },
+  {
+    id: 'dawn-horizon',
+    name: '微光晨曦云海',
+    desc: '柔和蓝粉渐变天际线与轻盈云海',
+    tag: '白天推荐',
+    recommended_theme: 'light',
+    type: 'svg',
+    url: '/backgrounds/dawn-horizon.svg',
+    preview_url: '/backgrounds/dawn-horizon.svg',
+    overlay: 8
   },
   {
     id: 'deep-blue-geo',
     name: '极简深蓝几何',
-    desc: '沉静深蓝几何光面，百搭毛玻璃卡片',
-    tag: '矢量',
+    desc: '沉静深蓝几何光面，百搭暗色毛玻璃',
+    tag: '夜晚推荐',
+    recommended_theme: 'dark',
     type: 'svg',
     url: '/backgrounds/deep-blue-geo.svg',
     preview_url: '/backgrounds/deep-blue-geo.svg',
@@ -57,7 +82,8 @@ const BUILTIN_BG_PRESETS = Object.freeze([
     id: 'aurora-peaks',
     name: '极光雪峰夜景',
     desc: '翠紫极光映照雪山轮廓与繁星',
-    tag: '矢量',
+    tag: '夜晚推荐',
+    recommended_theme: 'dark',
     type: 'svg',
     url: '/backgrounds/aurora-peaks.svg',
     preview_url: '/backgrounds/aurora-peaks.svg',
@@ -67,23 +93,28 @@ const BUILTIN_BG_PRESETS = Object.freeze([
     id: 'misty-forest',
     name: '青岚月影山林',
     desc: '层叠青墨远山与柔和清月微光',
-    tag: '矢量',
+    tag: '夜晚推荐',
+    recommended_theme: 'dark',
     type: 'svg',
     url: '/backgrounds/misty-forest.svg',
     preview_url: '/backgrounds/misty-forest.svg',
-    overlay: 30
-  },
-  {
-    id: 'dawn-horizon',
-    name: '微光晨曦云海',
-    desc: '柔和蓝粉渐变天际线与轻盈云海',
-    tag: '矢量',
-    type: 'svg',
-    url: '/backgrounds/dawn-horizon.svg',
-    preview_url: '/backgrounds/dawn-horizon.svg',
-    overlay: 36
+    overlay: 28
   }
 ]);
+
+const APPEARANCE_KEYS = [
+  'day_bg_url',
+  'day_bg_overlay',
+  'day_bg_preset',
+  'night_bg_url',
+  'night_bg_overlay',
+  'night_bg_preset',
+  'default_theme',
+  'bg_history',
+  'site_bg_url',
+  'site_bg_overlay',
+  'site_bg_preset'
+];
 
 db.run(`CREATE TABLE IF NOT EXISTS site_settings (
   key TEXT PRIMARY KEY,
@@ -102,14 +133,30 @@ const run = (sql, params = []) => new Promise((resolve, reject) => {
   });
 });
 
-function findPresetById(id) {
+function normalizeLegacyUrl(url) {
+  const clean = String(url || '').trim();
+  if (clean === '/backgrounds/twilight-campus.svg') {
+    return DEFAULT_NIGHT_BG_URL;
+  }
+  return clean;
+}
+
+function findPresetById(id, targetTheme = 'dark') {
   const clean = String(id || '').trim();
   if (!clean) return null;
+  if (clean === 'twilight-campus') {
+    return BUILTIN_BG_PRESETS.find(preset => preset.id === 'campus-night') || null;
+  }
+  if (clean === 'default') {
+    const fallbackId = targetTheme === 'light' ? DEFAULT_DAY_BG_PRESET : DEFAULT_NIGHT_BG_PRESET;
+    return BUILTIN_BG_PRESETS.find(preset => preset.id === fallbackId) || null;
+  }
   return BUILTIN_BG_PRESETS.find(preset => preset.id === clean) || null;
 }
 
 function findPresetByUrl(url) {
-  const clean = String(url || '').trim();
+  const clean = normalizeLegacyUrl(url);
+  if (!clean) return null;
   return BUILTIN_BG_PRESETS.find(preset => preset.url === clean) || null;
 }
 
@@ -303,7 +350,7 @@ function validateBgUrl(raw) {
   if (typeof raw !== 'string') {
     throw new Error('背景图片地址格式无效');
   }
-  const url = raw.trim();
+  const url = normalizeLegacyUrl(raw);
   if (!url) return '';
   if (url.length > 2048) {
     throw new Error('背景图片地址过长');
@@ -341,60 +388,212 @@ function validateBgOverlay(raw, fallback = DEFAULT_BG_OVERLAY) {
   return Math.round(Math.min(MAX_BG_OVERLAY, Math.max(MIN_BG_OVERLAY, num)));
 }
 
-function resolvePresetId(siteBgUrl, requestedPresetId = '') {
-  const cleanUrl = String(siteBgUrl || '').trim();
+function validateDefaultTheme(raw, fallback = DEFAULT_THEME) {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  const clean = String(raw).trim().toLowerCase();
+  if (!ALLOWED_THEMES.has(clean)) {
+    throw new Error('默认主题模式必须为 light、dark 或 auto');
+  }
+  return clean;
+}
+
+function normalizeBgHistory(raw) {
+  let list = [];
+  if (Array.isArray(raw)) {
+    list = raw;
+  } else if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) list = parsed;
+    } catch {
+      list = [];
+    }
+  }
+
+  const seen = new Set();
+  const normalized = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    let safeUrl = '';
+    try {
+      safeUrl = validateBgUrl(item.url);
+    } catch {
+      continue;
+    }
+    if (!safeUrl || seen.has(safeUrl)) continue;
+    seen.add(safeUrl);
+    const safeTheme = ALLOWED_BG_THEMES.has(String(item.theme || '').toLowerCase())
+      ? String(item.theme).toLowerCase()
+      : 'dark';
+    const fallbackOverlay = safeTheme === 'light' ? DEFAULT_DAY_BG_OVERLAY : DEFAULT_NIGHT_BG_OVERLAY;
+    let safeOverlay = fallbackOverlay;
+    try {
+      safeOverlay = validateBgOverlay(item.overlay, fallbackOverlay);
+    } catch {
+      safeOverlay = fallbackOverlay;
+    }
+    const savedAt = typeof item.savedAt === 'string' && item.savedAt.trim()
+      ? item.savedAt.trim()
+      : new Date().toISOString();
+    normalized.push({
+      url: safeUrl,
+      overlay: safeOverlay,
+      theme: safeTheme,
+      savedAt
+    });
+    if (normalized.length >= MAX_BG_HISTORY) break;
+  }
+  return normalized;
+}
+
+function pushBgHistory(currentHistory, entry) {
+  const existing = normalizeBgHistory(currentHistory);
+  if (!entry || !entry.url) return existing;
+  let safeUrl = '';
+  try {
+    safeUrl = validateBgUrl(entry.url);
+  } catch {
+    return existing;
+  }
+  if (!safeUrl) return existing;
+  const safeTheme = ALLOWED_BG_THEMES.has(String(entry.theme || '').toLowerCase())
+    ? String(entry.theme).toLowerCase()
+    : 'dark';
+  const fallbackOverlay = safeTheme === 'light' ? DEFAULT_DAY_BG_OVERLAY : DEFAULT_NIGHT_BG_OVERLAY;
+  const safeOverlay = validateBgOverlay(entry.overlay, fallbackOverlay);
+  const nextItem = {
+    url: safeUrl,
+    overlay: safeOverlay,
+    theme: safeTheme,
+    savedAt: typeof entry.savedAt === 'string' && entry.savedAt.trim()
+      ? entry.savedAt.trim()
+      : new Date().toISOString()
+  };
+  return [nextItem, ...existing.filter(item => item.url !== safeUrl)].slice(0, MAX_BG_HISTORY);
+}
+
+function resolvePresetId(bgUrl, requestedPresetId = '', targetTheme = 'dark') {
+  const cleanUrl = normalizeLegacyUrl(bgUrl);
   const matchedByUrl = findPresetByUrl(cleanUrl);
   if (matchedByUrl) return matchedByUrl.id;
   if (requestedPresetId) {
-    const matchedById = findPresetById(requestedPresetId);
+    const matchedById = findPresetById(requestedPresetId, targetTheme);
     if (matchedById && matchedById.url === cleanUrl) return matchedById.id;
   }
-  return cleanUrl ? '' : 'default';
+  return '';
+}
+
+function buildAppearanceFromMap(map) {
+  // 读取白天配置
+  let dayUrl = DEFAULT_DAY_BG_URL;
+  if (map.has('day_bg_url')) {
+    try {
+      const validated = validateBgUrl(map.get('day_bg_url'));
+      dayUrl = validated || DEFAULT_DAY_BG_URL;
+    } catch {
+      dayUrl = DEFAULT_DAY_BG_URL;
+    }
+  }
+  let dayOverlay = DEFAULT_DAY_BG_OVERLAY;
+  if (map.has('day_bg_overlay')) {
+    try {
+      dayOverlay = validateBgOverlay(map.get('day_bg_overlay'), DEFAULT_DAY_BG_OVERLAY);
+    } catch {
+      dayOverlay = DEFAULT_DAY_BG_OVERLAY;
+    }
+  }
+  const dayPreset = resolvePresetId(dayUrl, map.get('day_bg_preset') || '', 'light');
+
+  // 读取夜晚配置（兼容旧版单背景 site_bg_url / site_bg_overlay）
+  const hasNightKey = map.has('night_bg_url');
+  const rawNightUrl = hasNightKey ? map.get('night_bg_url') : (map.get('site_bg_url') || '');
+  let nightUrl = DEFAULT_NIGHT_BG_URL;
+  try {
+    const validated = validateBgUrl(rawNightUrl);
+    nightUrl = validated || DEFAULT_NIGHT_BG_URL;
+  } catch {
+    nightUrl = DEFAULT_NIGHT_BG_URL;
+  }
+  let nightOverlay = DEFAULT_NIGHT_BG_OVERLAY;
+  if (map.has('night_bg_overlay')) {
+    try {
+      nightOverlay = validateBgOverlay(map.get('night_bg_overlay'), DEFAULT_NIGHT_BG_OVERLAY);
+    } catch {
+      nightOverlay = DEFAULT_NIGHT_BG_OVERLAY;
+    }
+  } else if (map.has('site_bg_overlay')) {
+    try {
+      nightOverlay = validateBgOverlay(map.get('site_bg_overlay'), DEFAULT_NIGHT_BG_OVERLAY);
+    } catch {
+      nightOverlay = DEFAULT_NIGHT_BG_OVERLAY;
+    }
+  }
+  const nightPreset = resolvePresetId(
+    nightUrl,
+    map.get('night_bg_preset') || map.get('site_bg_preset') || '',
+    'dark'
+  );
+
+  let defaultTheme = DEFAULT_THEME;
+  if (map.has('default_theme')) {
+    try {
+      defaultTheme = validateDefaultTheme(map.get('default_theme'), DEFAULT_THEME);
+    } catch {
+      defaultTheme = DEFAULT_THEME;
+    }
+  }
+
+  const bgHistory = normalizeBgHistory(map.get('bg_history'));
+
+  return {
+    day_bg_url: dayUrl,
+    day_bg_overlay: dayOverlay,
+    day_bg_preset: dayPreset,
+    night_bg_url: nightUrl,
+    night_bg_overlay: nightOverlay,
+    night_bg_preset: nightPreset,
+    default_theme: defaultTheme,
+    bg_history: bgHistory,
+    // 向后兼容旧版单背景字段（同步夜晚模式）
+    site_bg_url: nightUrl,
+    site_bg_overlay: nightOverlay,
+    site_bg_preset: nightPreset
+  };
 }
 
 async function getAppearanceSettings() {
   let rows = [];
   try {
+    const placeholders = APPEARANCE_KEYS.map(() => '?').join(', ');
     rows = await all(
-      "SELECT key, value FROM site_settings WHERE key IN ('site_bg_url', 'site_bg_overlay', 'site_bg_preset')"
+      `SELECT key, value FROM site_settings WHERE key IN (${placeholders})`,
+      APPEARANCE_KEYS
     );
   } catch {
     rows = [];
   }
-  const map = new Map(rows.map(row => [row.key, row.value]));
-  const rawUrl = map.has('site_bg_url') ? String(map.get('site_bg_url') || '') : '';
-  let siteBgUrl = '';
-  try {
-    siteBgUrl = validateBgUrl(rawUrl);
-  } catch {
-    siteBgUrl = '';
-  }
-  let siteBgOverlay = DEFAULT_BG_OVERLAY;
-  if (map.has('site_bg_overlay')) {
-    try {
-      siteBgOverlay = validateBgOverlay(map.get('site_bg_overlay'), DEFAULT_BG_OVERLAY);
-    } catch {
-      siteBgOverlay = DEFAULT_BG_OVERLAY;
-    }
-  }
-  const storedPreset = map.has('site_bg_preset') ? String(map.get('site_bg_preset') || '') : '';
-  const siteBgPreset = resolvePresetId(siteBgUrl, storedPreset);
-
-  return {
-    site_bg_url: siteBgUrl,
-    site_bg_overlay: siteBgOverlay,
-    site_bg_preset: siteBgPreset
-  };
+  const map = new Map(rows.map(row => [String(row.key), String(row.value ?? '')]));
+  return buildAppearanceFromMap(map);
 }
 
-async function saveAppearanceSettings({ site_bg_url, site_bg_overlay, site_bg_preset }) {
-  const current = await getAppearanceSettings();
-  let nextUrlInput = site_bg_url;
-  let nextOverlayInput = site_bg_overlay;
+async function upsertSetting(key, value) {
+  await run(
+    `INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+    [key, String(value ?? '')]
+  );
+}
+
+function resolveThemeModeUpdate(currentUrl, currentOverlay, { urlInput, overlayInput, presetInput }, targetTheme) {
+  const defaultUrl = targetTheme === 'light' ? DEFAULT_DAY_BG_URL : DEFAULT_NIGHT_BG_URL;
+  const defaultOverlay = targetTheme === 'light' ? DEFAULT_DAY_BG_OVERLAY : DEFAULT_NIGHT_BG_OVERLAY;
+
+  let nextUrlInput = urlInput;
+  let nextOverlayInput = overlayInput;
   let requestedPreset = '';
 
-  if (site_bg_preset !== undefined && site_bg_preset !== null && String(site_bg_preset).trim() !== '') {
-    const preset = findPresetById(site_bg_preset);
+  if (presetInput !== undefined && presetInput !== null && String(presetInput).trim() !== '') {
+    const preset = findPresetById(presetInput, targetTheme);
     if (!preset) {
       throw new Error('未找到对应的内置背景预设');
     }
@@ -403,32 +602,110 @@ async function saveAppearanceSettings({ site_bg_url, site_bg_overlay, site_bg_pr
     if (nextOverlayInput === undefined) nextOverlayInput = preset.overlay;
   }
 
-  const nextUrl = nextUrlInput !== undefined ? validateBgUrl(nextUrlInput) : current.site_bg_url;
-  const nextOverlay = nextOverlayInput !== undefined
-    ? validateBgOverlay(nextOverlayInput, current.site_bg_overlay)
-    : current.site_bg_overlay;
-  const nextPreset = resolvePresetId(nextUrl, requestedPreset);
+  let nextUrl = currentUrl;
+  if (nextUrlInput !== undefined) {
+    const validated = validateBgUrl(nextUrlInput);
+    nextUrl = validated || defaultUrl;
+  }
 
-  await run(
-    `INSERT INTO site_settings (key, value, updated_at) VALUES ('site_bg_url', ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
-    [nextUrl]
+  let nextOverlay = currentOverlay;
+  if (nextOverlayInput !== undefined) {
+    nextOverlay = validateBgOverlay(nextOverlayInput, defaultOverlay);
+  }
+
+  const nextPreset = resolvePresetId(nextUrl, requestedPreset, targetTheme);
+  return { url: nextUrl, overlay: nextOverlay, preset: nextPreset };
+}
+
+async function saveAppearanceSettings(payload = {}) {
+  const current = await getAppearanceSettings();
+  const body = payload || {};
+
+  const targetLegacyTheme = String(body.theme || '').trim().toLowerCase() === 'light' ? 'light' : 'dark';
+
+  // 若调用方仍传递旧版单背景字段 site_bg_*，自动映射到目标模式（默认夜晚模式）
+  const dayUrlInput = body.day_bg_url !== undefined
+    ? body.day_bg_url
+    : (targetLegacyTheme === 'light' ? body.site_bg_url : undefined);
+  const dayOverlayInput = body.day_bg_overlay !== undefined
+    ? body.day_bg_overlay
+    : (targetLegacyTheme === 'light' ? body.site_bg_overlay : undefined);
+  const dayPresetInput = body.day_bg_preset !== undefined
+    ? body.day_bg_preset
+    : (targetLegacyTheme === 'light' ? body.site_bg_preset : undefined);
+
+  const nightUrlInput = body.night_bg_url !== undefined
+    ? body.night_bg_url
+    : (targetLegacyTheme === 'dark' ? body.site_bg_url : undefined);
+  const nightOverlayInput = body.night_bg_overlay !== undefined
+    ? body.night_bg_overlay
+    : (targetLegacyTheme === 'dark' ? body.site_bg_overlay : undefined);
+  const nightPresetInput = body.night_bg_preset !== undefined
+    ? body.night_bg_preset
+    : (targetLegacyTheme === 'dark' ? body.site_bg_preset : undefined);
+
+  const nextDay = resolveThemeModeUpdate(
+    current.day_bg_url,
+    current.day_bg_overlay,
+    { urlInput: dayUrlInput, overlayInput: dayOverlayInput, presetInput: dayPresetInput },
+    'light'
   );
-  await run(
-    `INSERT INTO site_settings (key, value, updated_at) VALUES ('site_bg_overlay', ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
-    [String(nextOverlay)]
+  const nextNight = resolveThemeModeUpdate(
+    current.night_bg_url,
+    current.night_bg_overlay,
+    { urlInput: nightUrlInput, overlayInput: nightOverlayInput, presetInput: nightPresetInput },
+    'dark'
   );
-  await run(
-    `INSERT INTO site_settings (key, value, updated_at) VALUES ('site_bg_preset', ?, datetime('now'))
-     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
-    [nextPreset]
-  );
+
+  const nextDefaultTheme = body.default_theme !== undefined
+    ? validateDefaultTheme(body.default_theme, current.default_theme)
+    : current.default_theme;
+
+  // 壁纸发生变更时，自动将变更前的旧壁纸压入历史记录（去重，最多保留最近 2 条）
+  let nextHistory = [...current.bg_history];
+  const nowIso = new Date().toISOString();
+  if (nextDay.url !== current.day_bg_url && current.day_bg_url) {
+    nextHistory = pushBgHistory(nextHistory, {
+      url: current.day_bg_url,
+      overlay: current.day_bg_overlay,
+      theme: 'light',
+      savedAt: nowIso
+    });
+  }
+  if (nextNight.url !== current.night_bg_url && current.night_bg_url) {
+    nextHistory = pushBgHistory(nextHistory, {
+      url: current.night_bg_url,
+      overlay: current.night_bg_overlay,
+      theme: 'dark',
+      savedAt: nowIso
+    });
+  }
+
+  await upsertSetting('day_bg_url', nextDay.url);
+  await upsertSetting('day_bg_overlay', String(nextDay.overlay));
+  await upsertSetting('day_bg_preset', nextDay.preset);
+  await upsertSetting('night_bg_url', nextNight.url);
+  await upsertSetting('night_bg_overlay', String(nextNight.overlay));
+  await upsertSetting('night_bg_preset', nextNight.preset);
+  await upsertSetting('default_theme', nextDefaultTheme);
+  await upsertSetting('bg_history', JSON.stringify(nextHistory));
+  // 同步写入旧版兼容字段
+  await upsertSetting('site_bg_url', nextNight.url);
+  await upsertSetting('site_bg_overlay', String(nextNight.overlay));
+  await upsertSetting('site_bg_preset', nextNight.preset);
 
   return {
-    site_bg_url: nextUrl,
-    site_bg_overlay: nextOverlay,
-    site_bg_preset: nextPreset
+    day_bg_url: nextDay.url,
+    day_bg_overlay: nextDay.overlay,
+    day_bg_preset: nextDay.preset,
+    night_bg_url: nextNight.url,
+    night_bg_overlay: nextNight.overlay,
+    night_bg_preset: nextNight.preset,
+    default_theme: nextDefaultTheme,
+    bg_history: nextHistory,
+    site_bg_url: nextNight.url,
+    site_bg_overlay: nextNight.overlay,
+    site_bg_preset: nextNight.preset
   };
 }
 
@@ -442,12 +719,12 @@ function createSettingsRouter(options = {}) {
     limits: { fileSize: maxFileSize }
   });
 
-  // 公开读取内置精选背景预设库
+  // 公开读取内置精选纯 SVG 背景预设库
   router.get('/presets', (req, res) => {
     res.json({ data: BUILTIN_BG_PRESETS });
   });
 
-  // 公开读取站点外观配置（供前台首页加载背景与遮罩透明度）
+  // 公开读取站点外观配置（白天/夜晚双模式壁纸、遮罩透明度、默认主题与历史壁纸）
   router.get('/appearance', async (req, res) => {
     try {
       const settings = await getAppearanceSettings();
@@ -457,17 +734,13 @@ function createSettingsRouter(options = {}) {
     }
   });
 
-  // 更新站点外观配置（支持内置预设、网络图片 URL、遮罩暗度调节、恢复默认）
+  // 更新站点外观配置（支持白天/夜晚独立保存、内置预设、网络图片 URL、遮罩调节与旧版单字段兼容）
   router.put('/appearance', authMiddleware, async (req, res) => {
     try {
       const body = req.body || {};
-      const updated = await saveAppearanceSettings({
-        site_bg_url: body.site_bg_url,
-        site_bg_overlay: body.site_bg_overlay,
-        site_bg_preset: body.site_bg_preset
-      });
+      const updated = await saveAppearanceSettings(body);
       res.json({
-        message: updated.site_bg_url ? '背景设置已保存' : '已恢复默认星空背景',
+        message: '背景设置已保存',
         ...updated
       });
     } catch (error) {
@@ -522,17 +795,23 @@ function createSettingsRouter(options = {}) {
         await fs.promises.writeFile(filePath, fileBufferToWrite);
 
         const publicUrl = `/uploads/${filename}`;
-        const overlayInput = req.body?.site_bg_overlay;
-        const saved = await saveAppearanceSettings({
-          site_bg_url: publicUrl,
-          site_bg_overlay: overlayInput !== undefined && overlayInput !== '' ? overlayInput : undefined,
-          site_bg_preset: ''
-        });
+        const targetTheme = String(req.body?.theme || '').trim().toLowerCase() === 'light' ? 'light' : 'dark';
+        const overlayRaw = targetTheme === 'light'
+          ? (req.body?.day_bg_overlay ?? req.body?.overlay ?? req.body?.site_bg_overlay)
+          : (req.body?.night_bg_overlay ?? req.body?.overlay ?? req.body?.site_bg_overlay);
+        const overlayValue = overlayRaw !== undefined && overlayRaw !== '' ? overlayRaw : undefined;
+
+        const savePayload = targetTheme === 'light'
+          ? { day_bg_url: publicUrl, day_bg_overlay: overlayValue, day_bg_preset: '' }
+          : { night_bg_url: publicUrl, night_bg_overlay: overlayValue, night_bg_preset: '' };
+
+        const saved = await saveAppearanceSettings(savePayload);
 
         res.json({
-          message: '背景图片上传成功并已生效',
+          message: targetTheme === 'light' ? '白天模式背景上传成功并已生效' : '夜晚模式背景上传成功并已生效',
           filename,
           url: publicUrl,
+          theme: targetTheme,
           ...saved
         });
       } catch (error) {
@@ -554,9 +833,21 @@ defaultRouter.detectImageFormat = detectImageFormat;
 defaultRouter.sanitizeSvg = sanitizeSvg;
 defaultRouter.validateBgUrl = validateBgUrl;
 defaultRouter.validateBgOverlay = validateBgOverlay;
+defaultRouter.validateDefaultTheme = validateDefaultTheme;
+defaultRouter.normalizeBgHistory = normalizeBgHistory;
+defaultRouter.pushBgHistory = pushBgHistory;
+defaultRouter.buildAppearanceFromMap = buildAppearanceFromMap;
 defaultRouter.getAppearanceSettings = getAppearanceSettings;
 defaultRouter.saveAppearanceSettings = saveAppearanceSettings;
+defaultRouter.DEFAULT_DAY_BG_URL = DEFAULT_DAY_BG_URL;
+defaultRouter.DEFAULT_DAY_BG_OVERLAY = DEFAULT_DAY_BG_OVERLAY;
+defaultRouter.DEFAULT_DAY_BG_PRESET = DEFAULT_DAY_BG_PRESET;
+defaultRouter.DEFAULT_NIGHT_BG_URL = DEFAULT_NIGHT_BG_URL;
+defaultRouter.DEFAULT_NIGHT_BG_OVERLAY = DEFAULT_NIGHT_BG_OVERLAY;
+defaultRouter.DEFAULT_NIGHT_BG_PRESET = DEFAULT_NIGHT_BG_PRESET;
 defaultRouter.DEFAULT_BG_OVERLAY = DEFAULT_BG_OVERLAY;
+defaultRouter.DEFAULT_THEME = DEFAULT_THEME;
+defaultRouter.MAX_BG_HISTORY = MAX_BG_HISTORY;
 defaultRouter.MAX_BG_FILE_SIZE = MAX_BG_FILE_SIZE;
 
 module.exports = defaultRouter;

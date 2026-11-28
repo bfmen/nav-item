@@ -1,41 +1,39 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
   <defs>
     <linearGradient id="dawnSky" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#1a244d"/>
-      <stop offset="35%" stop-color="#3c4c86"/>
-      <stop offset="68%" stop-color="#8b73a8"/>
-      <stop offset="88%" stop-color="#dfa09f"/>
-      <stop offset="100%" stop-color="#f6cfb0"/>
+      <stop offset="0%" stop-color="#5d94d6"/>
+      <stop offset="36%" stop-color="#8eb8e8"/>
+      <stop offset="68%" stop-color="#d4cde8"/>
+      <stop offset="88%" stop-color="#f5d4cc"/>
+      <stop offset="100%" stop-color="#fde8cf"/>
     </linearGradient>
-    <radialGradient id="dawnGlow" cx="50%" cy="84%" r="46%">
-      <stop offset="0%" stop-color="#fff4db" stop-opacity="0.86"/>
-      <stop offset="40%" stop-color="#f5b89e" stop-opacity="0.38"/>
-      <stop offset="100%" stop-color="#3c4c86" stop-opacity="0"/>
+    <radialGradient id="dawnGlow" cx="50%" cy="80%" r="48%">
+      <stop offset="0%" stop-color="#fffaf0" stop-opacity="0.92"/>
+      <stop offset="38%" stop-color="#ffd9bc" stop-opacity="0.46"/>
+      <stop offset="100%" stop-color="#8eb8e8" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="cloudSea1" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#f8d8c8" stop-opacity="0.72"/>
-      <stop offset="100%" stop-color="#6b5c8c" stop-opacity="0.52"/>
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.88"/>
+      <stop offset="100%" stop-color="#d8e3f5" stop-opacity="0.68"/>
     </linearGradient>
     <linearGradient id="cloudSea2" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#a58cb8" stop-opacity="0.78"/>
-      <stop offset="100%" stop-color="#2c335d" stop-opacity="0.9"/>
+      <stop offset="0%" stop-color="#eef2fc" stop-opacity="0.84"/>
+      <stop offset="100%" stop-color="#b9cce8" stop-opacity="0.88"/>
     </linearGradient>
     <linearGradient id="cloudSea3" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#4e4f7d" stop-opacity="0.92"/>
-      <stop offset="100%" stop-color="#181f3d"/>
+      <stop offset="0%" stop-color="#c9d7ee" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#8fa9d1"/>
     </linearGradient>
   </defs>
 
   <rect width="1920" height="1080" fill="url(#dawnSky)"/>
   <rect width="1920" height="1080" fill="url(#dawnGlow)"/>
 
-  <!-- 晨星 -->
-  <g fill="#ffffff" opacity="0.62">
-    <circle cx="280" cy="145" r="1.8"/>
-    <circle cx="590" cy="105" r="1.5"/>
-    <circle cx="960" cy="130" r="2.1"/>
-    <circle cx="1310" cy="98" r="1.6"/>
-    <circle cx="1640" cy="160" r="1.9"/>
+  <!-- 晨曦微光云丝 -->
+  <g fill="#ffffff" opacity="0.58">
+    <ellipse cx="420" cy="240" rx="220" ry="22"/>
+    <ellipse cx="1380" cy="290" rx="260" ry="24"/>
+    <ellipse cx="960" cy="180" rx="190" ry="18"/>
   </g>
 
   <!-- 层叠云海 -->
